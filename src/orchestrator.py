@@ -1,0 +1,500 @@
+"""Orchestrator: owns shared state, loop control, stop rules, keep/discard.
+
+Deterministic code, not an LLM. Fan-out uses a ThreadPoolExecutor with one
+worker per GPU — the build prompt's sanctioned fallback for LangGraph parallel
+branches (Phase 6; documented in docs/ASSUMPTIONS.md).
+"""
+from __future__ import annotations
+
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+from .agents.analyst import Analyst
+from .agents.baseline import BaselineAgent
+from .agents.coder import Coder
+from .agents.guard import Guard
+from .agents.ideator import Ideator
+from .agents.librarian import Librarian, lesson_line, untried_categories
+from .config import Config
+from .decision import decide, decide_retest, plausibility_floor
+from .llm.client import BudgetExhausted, BudgetTracker
+from .memory.store import MemoryStore
+from .schemas import CATEGORIES, Experiment, Hypothesis, Patch, RunResult
+from .tools import git_ops, patching
+from .tools.hashing import HashRegistry, ProtectedFileError, diff_hash
+from .tools.runner import run_training
+
+MAX_CRASH_FIXES = 2  # per experiment (Section 6.3 step 3)
+
+
+@dataclass
+class WorkerOutcome:
+    hypothesis: Hypothesis
+    patch: Optional[Patch] = None
+    guard_report: object = None
+    result: Optional[RunResult] = None
+    analyst_note: object = None
+    diff: str = ""
+    patched_src: str = ""
+    tokens_before: int = 0
+
+
+class Orchestrator:
+    def __init__(self, cfg: Config, client, runner_fn: Callable = run_training,
+                 log: Callable[[str], None] = print):
+        self.cfg = cfg
+        self.client = client
+        self.runner_fn = runner_fn
+        self.log = log
+        root = Path(cfg.root)
+        self.repo = (root / cfg.paths.repo_dir).resolve()
+        self.work_dir = Path(cfg.paths.work_dir)
+        if not self.work_dir.is_absolute():
+            self.work_dir = (root / self.work_dir).resolve()
+        self.stop_file = Path(cfg.paths.stop_file)
+        if not self.stop_file.is_absolute():
+            self.stop_file = (root / self.stop_file).resolve()
+        self.prompts_dir = root / "prompts"
+        if not self.prompts_dir.exists():  # tests/tmp roots: use project prompts
+            self.prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
+        mem = Path(cfg.paths.memory_dir)
+        self.store = MemoryStore(mem if mem.is_absolute() else root / mem)
+        self.budget: BudgetTracker = client.budget
+
+        protected = [self.repo / f for f in cfg.guard.protected_files
+                     if (self.repo / f).exists()]
+        cfg_file = root / "config.yaml"
+        if cfg_file.exists():
+            protected.append(cfg_file)
+        self.hash_registry = HashRegistry(protected)
+
+        # Agents per arm (baseline arm gets no Guard-LLM/Analyst/Librarian).
+        self.is_ma = cfg.mode.arm == "multi_agent"
+        self.coder = Coder(client, self.prompts_dir)
+        self.guard = Guard(cfg.guard.max_edits, cfg.guard.max_diff_lines,
+                           client, self.prompts_dir, use_llm=self.is_ma)
+        self.ideator = Ideator(client, self.prompts_dir) if self.is_ma else None
+        self.analyst = Analyst(client, self.prompts_dir) if self.is_ma else None
+        self.librarian = (
+            Librarian(client, self.prompts_dir,
+                      cfg.dedupe.text_similarity_threshold,
+                      cfg.dedupe.use_llm_judge_for_borderline)
+            if self.is_ma else None)
+        self.baseline = None if self.is_ma else BaselineAgent(
+            client, self.prompts_dir)
+
+        self.state = self.store.load_state() or self._fresh_state()
+
+    # ------------------------------------------------------------------ state
+    def _fresh_state(self) -> dict:
+        return {
+            "round": 0, "next_hyp_id": 1, "experiments_done": 0,
+            "best_val_bpb": None, "best_commit": git_ops.head_commit(self.repo),
+            "baseline_bpb": None, "epsilon": None, "calibration_values": [],
+            "no_improve_streak": 0, "combine_queue": [],
+            "started_at": time.time(), "stopped_reason": None,
+        }
+
+    def save_state(self, reason: str | None = None) -> None:
+        if reason:
+            self.state["stopped_reason"] = reason
+        self.state["api_calls"] = self.budget.calls_total
+        self.state["api_tokens"] = self.budget.tokens_total
+        self.store.save_state(self.state)
+
+    def _stop_reason(self) -> str | None:
+        b = self.cfg.budget
+        if self.stop_file.exists():
+            return "stop_file"  # G16
+        if self.state["round"] >= b.max_rounds:
+            return "max_rounds"
+        if self.state["experiments_done"] >= b.max_experiments:
+            return "max_experiments"
+        if self.state["no_improve_streak"] >= b.no_improvement_patience:
+            return "no_improvement"
+        cap = b.wall_clock_cap_hours * 3600 - b.session_margin_minutes * 60
+        if time.time() - self.state["started_at"] > cap:
+            return "wall_clock_cap"  # G17
+        return None
+
+    # ------------------------------------------------------------------ main
+    def run(self) -> dict:
+        self.log(f"[orchestrator] arm={self.cfg.mode.arm} "
+                 f"dry_run={self.cfg.mode.dry_run}")
+        try:
+            self._calibrate_if_needed()
+            while True:
+                reason = self._stop_reason()
+                if reason:
+                    self.save_state(reason)
+                    self.log(f"[orchestrator] stopping: {reason}")
+                    break
+                self._round()
+            self.hash_registry.verify()  # G1 final check
+        except (BudgetExhausted, ProtectedFileError) as e:
+            self.save_state(type(e).__name__)
+            self.log(f"[orchestrator] stopping: {type(e).__name__}: {e}")
+        return self.state
+
+    def _calibrate_if_needed(self) -> None:
+        if self.state["epsilon"] is not None:
+            return  # resumed
+        worktrees = [self.work_dir / f"gpu{i}" for i in range(2)]
+        best_commit = self.state["best_commit"]
+        for wt in worktrees:
+            git_ops.ensure_worktree(self.repo, wt, best_commit)
+        self.log("[calibration] running unmodified train.py on both GPUs...")
+        from .calibration import run_calibration
+        report = run_calibration(
+            worktrees, self.cfg.decision.calibration_runs,
+            self.cfg.training.time_budget_s, self.cfg.training.startup_allowance_s,
+            self.cfg.decision.min_delta, runner=self.runner_fn)
+        if not report.values:
+            raise RuntimeError("calibration produced no valid runs")
+        baseline = min(report.values)
+        self.state.update(
+            epsilon=report.epsilon, baseline_bpb=baseline,
+            best_val_bpb=baseline, calibration_values=report.values)
+        self.save_state()
+        self.log(f"[calibration]\n{report.summary()}")
+
+    # ------------------------------------------------------------------ round
+    def _round(self) -> None:
+        self.budget.new_round()
+        rnd = self.state["round"]
+        self.log(f"[round {rnd}] start best={self.state['best_val_bpb']}")
+        past = self.store.read_experiments()
+
+        if self.is_ma:
+            tasks = self._plan_round_ma(past)
+        else:
+            tasks = self._plan_round_baseline()
+
+        with ThreadPoolExecutor(max_workers=2) as ex:  # join = both branches
+            outcomes = list(ex.map(lambda t: self._worker(*t), tasks))
+
+        self._analyze_decide_log(outcomes)
+        self.state["round"] = rnd + 1
+        self.save_state()
+
+    def _next_id(self) -> str:
+        hid = f"H-{self.state['next_hyp_id']:04d}"
+        self.state["next_hyp_id"] += 1
+        return hid
+
+    def _plan_round_ma(self, past: list[dict]) -> list[tuple]:
+        """Returns [(gpu, hypothesis, preset_patch_or_None), ...] (<=2)."""
+        combine = self.state["combine_queue"]
+        tasks: list[tuple] = []
+        if combine:
+            item = combine.pop(0)  # takes one slot (Section 6.3 rule 6)
+            tasks.append((0, Hypothesis(**item["hypothesis"]),
+                          Patch(**item["patch"])))
+        n_slots = 2 - len(tasks)
+        if n_slots <= 0:
+            return tasks
+        summary = self.librarian.summarize(past)
+        blocked = "\n".join(self._blocked_ideas(past))
+        untried = ", ".join(untried_categories(past))
+        recent = "\n".join(
+            f"{e['hypothesis']['id']}: {e['hypothesis']['change_summary']} "
+            f"-> {e['result']['status']} {e['result'].get('val_bpb')}"
+            for e in past[-10:])
+        valid: list[Hypothesis] = []
+        for _ in range(3):  # initial + max 2 regenerations (Section 6.3 rule 2)
+            hyps, err = self.ideator.propose(
+                str(self.state["best_val_bpb"]), summary, blocked, recent,
+                untried, "(empty)", [self._next_id() for _ in range(n_slots)])
+            if err:
+                self.log(f"[ideator] failed: {err}")
+                continue
+            for h in hyps:
+                if any(h.category == v.category for v in valid):
+                    continue  # must be different categories
+                dup, why = self.librarian.is_duplicate(h, past)
+                if dup:
+                    self.log(f"[dedupe] {h.id} rejected: {why}")
+                    continue
+                valid.append(h)
+            if len(valid) >= n_slots:
+                break
+        for i, h in enumerate(valid[:n_slots]):
+            tasks.append((len(tasks), h, None))
+        return tasks[:2]
+
+    def _plan_round_baseline(self) -> list[tuple]:
+        return [(gpu, None, None) for gpu in range(2)]
+
+    def _blocked_ideas(self, past: list[dict]) -> list[str]:
+        out = []
+        for e in past:
+            g = e.get("guard") or {}
+            r = e.get("result", {})
+            if g.get("final") == "reject" or r.get("status") in (
+                    "crash", "oom", "nan", "timeout", "guard_reject"):
+                out.append(f"{e['hypothesis'].get('id')}: "
+                           f"{e['hypothesis'].get('change_summary')}")
+        return out
+
+    # -------------------------------------------------------------- workers
+    def _worker(self, gpu: int, hypothesis: Optional[Hypothesis],
+                preset_patch: Optional[Patch]) -> WorkerOutcome:
+        """One worker branch: code -> guard -> run (with fix loops)."""
+        wt = self.work_dir / f"gpu{gpu}"
+        git_ops.ensure_worktree(self.repo, wt, self.state["best_commit"])
+        src = (wt / "train.py").read_text()
+        if self.is_ma:
+            return self._worker_ma(gpu, wt, src, hypothesis, preset_patch)
+        return self._worker_baseline(gpu, wt, src)
+
+    def _worker_ma(self, gpu, wt, src, hypothesis, preset_patch) -> WorkerOutcome:
+        out = WorkerOutcome(hypothesis=hypothesis,
+                            tokens_before=self.budget.tokens_total)
+        patch = preset_patch
+        if patch is not None:
+            try:  # combine-queue patch may not apply to the new best (6.3.6)
+                patching.apply_edits(src, patch.edits, self.cfg.guard.max_edits)
+            except patching.PatchError:
+                patch = None  # re-adapt once via the Coder below
+        if patch is None:
+            patch, err = self.coder.make_patch(hypothesis, src)
+            if patch is None:
+                out.result = RunResult(hypothesis_id=hypothesis.id, gpu=gpu,
+                                       status="guard_reject", stdout_tail=err)
+                return out
+        # Guard with one coder retry on reject (Section 6.3).
+        reasons = ""
+        for attempt in range(2):
+            report, patched = self.guard.check(hypothesis, patch, src)
+            out.guard_report = report
+            if report.approved:
+                break
+            reasons = "; ".join(
+                c.detail for c in report.deterministic if not c.passed)
+            reasons += "; " + "; ".join(report.llm_reasons)
+            if attempt == 0:
+                patch2, _ = self.coder.make_patch(
+                    hypothesis, src, rejection_reasons=reasons)
+                if patch2 is None:
+                    break
+                patch = patch2
+        out.patch = patch
+        if not report.approved:
+            out.result = RunResult(hypothesis_id=hypothesis.id, gpu=gpu,
+                                   status="guard_reject",
+                                   stdout_tail=reasons[:2000])
+            return out
+        return self._run_with_fixes(out, gpu, wt, src, patched)
+
+    def _run_with_fixes(self, out, gpu, wt, src, patched) -> WorkerOutcome:
+        """Write patch, pre-flight, full run, crash-fix loop (max 2). G8/G10."""
+        (wt / "train.py").write_text(patched)
+        out.patched_src = patched
+        out.diff = patching.unified_diff(src, patched)
+
+        def full_run() -> RunResult:
+            return self.runner_fn(wt, gpu, out.hypothesis.id,
+                                  self.cfg.training.time_budget_s,
+                                  self.cfg.training.startup_allowance_s,
+                                  diff_hash=diff_hash(out.diff))
+
+        # G8: cheap pre-flight first (unless disabled via dry_run_steps=0).
+        if self.cfg.training.dry_run_steps:
+            pre = self.runner_fn(
+                wt, gpu, out.hypothesis.id, self.cfg.training.time_budget_s,
+                self.cfg.training.startup_allowance_s,
+                diff_hash=diff_hash(out.diff),
+                preflight_steps=self.cfg.training.dry_run_steps)
+            preflight_ok = (pre.status == "ok"
+                            and "PREFLIGHT_OK" in pre.stdout_tail)
+            result = full_run() if preflight_ok else pre
+        else:
+            result = full_run()
+
+        fixes = 0
+        while result.status in ("crash", "oom", "nan"):
+            if fixes >= MAX_CRASH_FIXES:
+                break
+            fixes += 1
+            patch, err = self.coder.make_patch(
+                out.hypothesis, (wt / "train.py").read_text(),
+                error_context=result.stdout_tail[-3000:])
+            if patch is None:
+                break
+            try:
+                patched = patching.apply_edits(
+                    (wt / "train.py").read_text(), patch.edits,
+                    self.cfg.guard.max_edits)
+            except patching.PatchError as e:
+                result.stdout_tail = f"fix patch did not apply: {e}"
+                break
+            (wt / "train.py").write_text(patched)
+            out.patched_src = patched
+            out.diff = patching.unified_diff(src, patched)
+            result = full_run()
+        out.result = result
+        self.hash_registry.verify()  # G1 after every run
+        return out
+
+    def _worker_baseline(self, gpu, wt, src) -> WorkerOutcome:
+        """B1 arm: single agent, minimal deterministic safety only."""
+        hid = self._next_id()
+        past = self.store.read_experiments()
+        recent = "\n".join(
+            f"{e['hypothesis'].get('change_summary')} -> "
+            f"{e['result'].get('status')} {e['result'].get('val_bpb')}"
+            for e in past[-10:])
+        out = WorkerOutcome(
+            hypothesis=Hypothesis(id=hid, category="optimizer",
+                                  change_summary="(baseline)", risk="med"),
+            tokens_before=self.budget.tokens_total)
+        error_ctx = ""
+        for _ in range(2):
+            bp, err = self.baseline.propose_and_patch(
+                str(self.state["best_val_bpb"]), src, recent, error_ctx)
+            if bp is None or not bp.edits:
+                out.result = RunResult(hypothesis_id=hid, gpu=gpu,
+                                       status="crash",
+                                       stdout_tail=err or "empty patch")
+                return out
+            out.hypothesis.change_summary = bp.change_summary
+            if bp.category in CATEGORIES:
+                out.hypothesis.category = bp.category
+            try:
+                patched = patching.apply_edits(src, bp.edits,
+                                               self.cfg.guard.max_edits)
+            except patching.PatchError as e:
+                error_ctx = f"patch failed to apply: {e}"
+                continue
+            ok, cerr = patching.compiles(patched)
+            if not ok:
+                error_ctx = f"patched file does not compile: {cerr}"
+                continue
+            (wt / "train.py").write_text(patched)
+            out.patched_src = patched
+            out.diff = patching.unified_diff(src, patched)
+            out.result = self.runner_fn(
+                wt, gpu, hid, self.cfg.training.time_budget_s,
+                self.cfg.training.startup_allowance_s,
+                diff_hash=diff_hash(out.diff))
+            self.hash_registry.verify()
+            return out
+        out.result = RunResult(hypothesis_id=hid, gpu=gpu, status="crash",
+                               stdout_tail=error_ctx)
+        return out
+
+
+
+    # ---------------------------------------------------- decide / log / keep
+    def _analyze_decide_log(self, outcomes: list[WorkerOutcome]) -> None:
+        best = self.state["best_val_bpb"]
+        eps = self.state["epsilon"]
+        floor = plausibility_floor(self.state["baseline_bpb"],
+                                   self.cfg.decision.plausibility_floor_factor)
+        decisions = {}
+        improved: list[WorkerOutcome] = []
+        for out in outcomes:
+            if out.result is None:
+                continue
+            if self.analyst is not None:
+                note, _ = self.analyst.analyze(out.hypothesis, out.diff,
+                                               out.result, best, eps)
+                out.analyst_note = note
+            dec = decide(out.result, best, eps, floor,
+                         self.cfg.decision.sanity_ceiling,
+                         self.cfg.decision.confirm_marginal_wins)
+            if dec.action == "retest":  # marginal win: confirm with one re-run
+                wt = self.work_dir / f"gpu{out.result.gpu}"
+                re = self.runner_fn(wt, out.result.gpu, out.hypothesis.id,
+                                    self.cfg.training.time_budget_s,
+                                    self.cfg.training.startup_allowance_s)
+                if re.status == "ok" and re.val_bpb is not None:
+                    mean = (out.result.val_bpb + re.val_bpb) / 2
+                    dec = decide_retest(mean, best, eps)
+                    dec.hypothesis_id = out.hypothesis.id
+                else:
+                    dec = decide(re, best, eps, floor,
+                                 self.cfg.decision.sanity_ceiling, False)
+                    dec.hypothesis_id = out.hypothesis.id
+            decisions[out.hypothesis.id] = dec
+            if dec.action == "keep":
+                improved.append(out)
+
+        # Both improved -> keep the better, queue the other (Section 6.3.6).
+        if len(improved) == 2:
+            improved.sort(key=lambda o: o.result.val_bpb)
+            winner, loser = improved
+            decisions[loser.hypothesis.id] = decisions[
+                loser.hypothesis.id].model_copy(update={
+                    "action": "discard", "reason_code": "discard_queued_combine"})
+            if loser.patch is not None:
+                self.state["combine_queue"].append({
+                    "hypothesis": loser.hypothesis.model_dump(),
+                    "patch": loser.patch.model_dump()})
+            improved = [winner]
+
+        kept = False
+        for out in outcomes:
+            if out.result is None:
+                continue
+            dec = decisions[out.hypothesis.id]
+            if dec.action == "keep" and out.patched_src:
+                (self.repo / "train.py").write_text(out.patched_src)
+                commit = git_ops.commit_train_py(
+                    self.repo, f"{out.hypothesis.id}: "
+                    f"{out.hypothesis.change_summary[:60]}")
+                self.state["best_commit"] = commit
+                self.state["best_val_bpb"] = out.result.val_bpb
+                best = out.result.val_bpb
+                kept = True
+            exp = Experiment(
+                round=self.state["round"], worker=out.result.gpu,
+                hypothesis=out.hypothesis,
+                patch_hash=diff_hash(out.diff) if out.diff else "",
+                guard=out.guard_report, result=out.result, decision=dec,
+                analyst_note=getattr(out, "analyst_note", None),
+                api_tokens=self.budget.tokens_total - out.tokens_before,
+                timestamp=datetime.now(timezone.utc).isoformat())
+            self.store.append_experiment(exp)
+            self.store.append_lesson(lesson_line(exp))
+            self.state["experiments_done"] += 1
+            self.log(f"  [{exp.hypothesis.id}] gpu{exp.worker} "
+                     f"{exp.result.status} val_bpb={exp.result.val_bpb} "
+                     f"-> {dec.action} ({dec.reason_code})")
+        self.state["no_improve_streak"] = 0 if kept else (
+            self.state["no_improve_streak"] + 1)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    from .llm.client import BudgetTracker, GeminiClient, MockLLMClient
+
+    parser = argparse.ArgumentParser(description="autoresearch-team orchestrator")
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="mock LLM; point paths.repo_dir at a mock repo")
+    args = parser.parse_args(argv)
+
+    from .config import load_config
+    cfg = load_config(args.config)
+    if args.dry_run:
+        cfg.mode.dry_run = True
+    budget = BudgetTracker(cfg.budget.max_api_calls_total,
+                           cfg.budget.max_tokens_total,
+                           cfg.budget.max_calls_per_round)
+    if cfg.mode.dry_run:
+        from .mock_handlers import default_handlers
+        client = MockLLMClient(cfg.llm, budget, default_handlers())
+    else:
+        client = GeminiClient(cfg.llm, budget)
+    Orchestrator(cfg, client).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

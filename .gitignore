@@ -1,0 +1,18 @@
+# runtime artifacts (never push logs, state, worktrees, results)
+work/
+memory/
+results/*
+!results/.gitkeep
+STOP
+*.log
+
+# generated test/dry-run fixture (regenerate: python -m src.mock_repo <dir>)
+evals/fixtures/mock_git_repo/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local data cache from prepare.py, if ever run locally
+.cache/

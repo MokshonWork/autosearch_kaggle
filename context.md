@@ -1,0 +1,100 @@
+# context.md — build state: Multi-Agent AutoResearch Team
+
+> Living handoff file. Read FIRST when resuming. Updated at every milestone.
+
+## Progress log
+
+- 2026-09-21 (final this session): PROJECT COMPLETE offline. Phases 0-6 built;
+  Phase 7 (real A/B runs) and E13-E15 are Kaggle-only and remain UNVERIFIED.
+  - `python -m pytest tests -q` → **100 passed** (E1-E12 + units + integration).
+  - `python -m evals.run_ab --config evals/fixtures/dry_config.yaml --repeats 1`
+    → works end-to-end (mock), generates ab_report.md + val_bpb_curves.png.
+  - Notebook JSON valid; `python -m src.orchestrator --help` OK.
+- REMAINING (all GPU/Kaggle, cannot be done locally): run notebook cells
+  1-8 on Kaggle T4 x2; verify A3/A4/A6/A7/A8; update config.yaml
+  startup_allowance_s (A8) after the cell-4 measurement; E13-E15; fill
+  docs/COMPUTE_BUDGET.md with measured numbers; results/ab_report.md with the
+  real verdict.
+
+
+## Mission (build prompt summary)
+
+Multi-agent autonomous research system on `karpathy/autoresearch` (MIT). Agents
+(Ideator, Coder, Guard, Analyst, Librarian) + deterministic Orchestrator/Runner run
+code-level experiments on `train.py` (metric `val_bpb`, lower=better, 300s budget) on
+Kaggle GPU T4 x2 (2 parallel workers, one GPU each, NO DDP). Claim: multi-agent beats
+single-agent baseline B1 at equal experiments/wall-clock, or honestly report noise.
+
+## Current state
+
+- `repo/` = clean clone of karpathy/autoresearch @ 228791f (master). ONLY pre-existing work.
+- Read fully: repo/prepare.py, repo/train.py, repo/program.md.
+- Env: Python 3.14, pydantic 2.13.5, PyYAML 6.0.3, pytest 9.1.1, matplotlib 3.11.1.
+  NO torch/langgraph locally. Local GPU RTX 3050 (not T4): training UNVERIFIED until Kaggle.
+
+## Verified facts (Section 5 assumptions)
+
+- A1 VERIFIED — repo/train.py NOT T4-compatible: FA3 via `kernels` (lines 20-24),
+  `fa3.flash_attn_func` (93), bf16 casts (179-181, 191), bf16 autocast, Muon `g.bfloat16()`
+  (324), torch.compile decorators (305, 316) + `torch.compile(model)` in setup.
+- A2 VERIFIED — protected regions:
+  - prepare.py (WHOLE FILE, G1): MAX_SEQ_LEN=2048 (30), TIME_BUDGET=300 (31),
+    EVAL_TOKENS (32), evaluate_bpb (343-365).
+  - train.py: import line 26; seeds manual_seed(42)/cuda.manual_seed(42); eval call
+    line 613; metric print line 622; stop condition line 603.
+- A3/A4 UNVERIFIED (Kaggle quota/session, Secrets) — verify on Kaggle.
+- A5 DECISION: LangGraph SKIPPED; using prompt-sanctioned fallback (Phase 6): plain-Python
+  orchestrator + ThreadPoolExecutor fan-out (2 workers). In docs/ASSUMPTIONS.md.
+- A6: Gemini REST `generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
+  Model IDs in config.yaml (default gemini-2.5-flash); verify current IDs on Kaggle.
+- A7/A8 UNVERIFIED until Phase 1 calibration on Kaggle.
+
+## Locked design decisions
+
+- T4 port (one-time, human, committed to repo/): FA3 -> F.scaled_dot_product_attention
+  (causal; window mask only when window<T); bf16 -> fp16 autocast + GradScaler; bf16 casts
+  removed; Muon inner dtype float16; USE_COMPILE=False default; preflight hook env
+  `AUTOREGRESS_PREFLIGHT_STEPS` (name: AUTORESEARCH_PREFLIGHT_STEPS) prints PREFLIGHT_OK, exit 0.
+  Small-GPU cfg: prepare.py MAX_SEQ_LEN=256, VOCAB_SIZE=4096, EVAL_TOKENS=524288;
+  train.py DEPTH=4, WINDOW_PATTERN="L", TOTAL_BATCH_SIZE=2**14, DEVICE_BATCH_SIZE=64.
+- G3 protected snippets (exact strings, verbatim in mock train.py too):
+  1. `from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb`
+  2. `torch.manual_seed(42)`
+  3. `val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)`
+  4. `print(f"val_bpb:          {val_bpb:.6f}")`
+  5. `if step > 10 and total_training_time >= TIME_BUDGET:`
+- Secrets only via env `GEMINI_API_KEY` (notebook injects from UserSecretsClient); runner
+  passes a whitelisted stripped env to the training subprocess.
+- epsilon = max(2*std, min_delta); keep iff status==ok and val_bpb < best-epsilon and
+  val_bpb >= plausibility_floor_factor*baseline; marginal wins (eps..3eps) re-run once
+  if confirm_marginal_wins.
+- Mock runner: tests/fixtures/mock_repo/train.py derives val_bpb from sha256 of own source;
+  env overrides MOCK_VAL_BPB, MOCK_TRAIN_BEHAVIOR in {ok,crash,oom,nan,timeout}; preflight OK.
+- Dedupe: difflib ratio on `category + change_summary`; >=threshold dup; >=0.75*threshold
+  borderline -> LLM judge if enabled.
+
+## TODO (Kaggle-only work remains)
+
+1. [x] Scaffold: config.yaml, requirements.txt, README.md, LICENSE, Makefile.
+2. [x] T4 port repo/train.py + prepare.py cfg; commit 9cce20e.
+3. [x] src/ complete (schemas, config, prompt_render, llm/client(+mock),
+   tools/{hashing,patching,ast_checks,metrics_parser,git_ops,runner},
+   memory/store, decision, calibration, agents x6, orchestrator, mock_handlers,
+   mock_repo). NOTE: src/state.py from the spec layout was folded into
+   memory/store.py + orchestrator state dict (simpler; documented here).
+4. [x] prompts/ 8 files.
+5. [x] tests/ — 100 pass.
+6. [x] evals/: run_ab.py, metrics.py, report.py, fixtures/dry_config.yaml.
+7. [x] docs/ all 7 files.
+8. [x] notebook/kaggle_run.ipynb.
+9. [ ] KAGGLE: run notebook cells 1-8; verify A3/A4/A6/A7/A8; update
+   startup_allowance_s after cell 4; fill COMPUTE_BUDGET.md; E13-E15;
+   generate real results/ab_report.md. Verify Gemini model IDs on run day.
+10. [ ] Optional if quota allows: E16 ablations; Librarian narrative appended
+    to ab_report.md (prompts/librarian_report.md exists; wire via
+    Librarian.report_narrative).
+
+## Risks
+
+- fp16 stability / SDPA window / compile on T4 UNVERIFIED until Kaggle.
+- E13-E15 GPU evals = notebook steps only; results/ generated on Kaggle.
