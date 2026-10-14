@@ -30,10 +30,15 @@ class LLMError(RuntimeError):
 
 
 class BudgetTracker:
-    """Counts API calls and tokens; raises BudgetExhausted past limits (G13)."""
+    """Counts API calls and tokens; raises BudgetExhausted past limits (G13).
+
+    Thread-safe: two worker threads share one tracker (hardening Ch.7).
+    """
 
     def __init__(self, max_calls_total: int, max_tokens_total: int,
                  max_calls_per_round: int):
+        import threading
+        self._lock = threading.Lock()
         self.max_calls_total = max_calls_total
         self.max_tokens_total = max_tokens_total
         self.max_calls_per_round = max_calls_per_round
@@ -45,16 +50,18 @@ class BudgetTracker:
         self.calls_this_round = 0
 
     def record(self, tokens: int) -> None:
-        self.calls_total += 1
-        self.calls_this_round += 1
-        self.tokens_total += tokens
-        if self.calls_total > self.max_calls_total:
-            raise BudgetExhausted(f"api calls total > {self.max_calls_total}")
-        if self.tokens_total > self.max_tokens_total:
-            raise BudgetExhausted(f"tokens total > {self.max_tokens_total}")
-        if self.calls_this_round > self.max_calls_per_round:
-            raise BudgetExhausted(
-                f"api calls this round > {self.max_calls_per_round}")
+        with self._lock:
+            self.calls_total += 1
+            self.calls_this_round += 1
+            self.tokens_total += tokens
+            if self.calls_total > self.max_calls_total:
+                raise BudgetExhausted(
+                    f"api calls total > {self.max_calls_total}")
+            if self.tokens_total > self.max_tokens_total:
+                raise BudgetExhausted(f"tokens total > {self.max_tokens_total}")
+            if self.calls_this_round > self.max_calls_per_round:
+                raise BudgetExhausted(
+                    f"api calls this round > {self.max_calls_per_round}")
 
 
 def _extract_json(text: str) -> str:

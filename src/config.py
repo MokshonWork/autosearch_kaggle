@@ -43,6 +43,7 @@ class TrainingConfig(BaseModel):
     seed: int = 42
     fp16: bool = True
     use_compile: bool = False
+    gpus: list[int] | None = None  # explicit device ids; None = auto-discover
 
 
 class DecisionConfig(BaseModel):
