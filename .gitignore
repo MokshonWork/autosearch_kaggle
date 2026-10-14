@@ -1,6 +1,8 @@
 # runtime artifacts (never push logs, state, worktrees, results)
 work/
 memory/
+!src/memory/
+!src/memory/**
 results/*
 !results/.gitkeep
 STOP
