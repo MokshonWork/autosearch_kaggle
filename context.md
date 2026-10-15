@@ -4,6 +4,35 @@
 
 ## Progress log
 
+- 2026-10-16: Phase 1-2 COMPLETE (calibration fixed + verified on Kaggle T4 x2).
+  - Root causes of "calibration produced no valid runs" (all confirmed):
+    (A) runner's stripped env dropped `LD_LIBRARY_PATH` -> CUDA invisible in
+    the training subprocess on Kaggle (fix existed only as unpushed
+    Kaggle-local commit 7e1d674; restored+committed locally);
+    (B) `training.time_budget_s` never reached train.py (fixed 300s budget
+    vs 190s smoke hard-timeout -> guaranteed timeouts) -> runner now forwards
+    `AUTORESEARCH_TIME_BUDGET`, train.py reads it (default 300 unchanged);
+    (C) calibration swallowed per-run diagnostics -> failures now retained in
+    `CalibrationReport.failures` and the RuntimeError includes per-GPU
+    status/wall/stdout-tail; (D) `_resolve_source_repo` accepted repo/ without
+    its own .git (git walked up to the outer repo) -> now fails fast.
+  - 147 tests pass (+9 regression tests). Dry-run A/B green. Guard verified
+    against the new train.py baseline (benign OK, env-read rejected).
+  - Kaggle evidence (kernel mo2xgoyal/autosearch-diag v4, COMPLETE):
+    restricted child CUDA ok on gpu0+gpu1; preflight ok (9.3s/4.7s);
+    10s-budget runs ok on both GPUs (val_bpb 1.924438/1.925857, steps
+    102/101, wall ~19.6s, vram 2.3GB, ~148k tok/s); REAL calibration ok:
+    values [1.926492, 1.927058], std 0.0004, epsilon 0.002, gpu mean diff
+    0.000566 (A7: the two T4s agree closely). startup+eval measured ~7s
+    (config startup_allowance_s 420 is very safe).
+  - MEASURED A8: startup+eval ~= 7 s, not minutes. Note in config when
+    convenient; no urgency.
+  - OPEN ISSUE: Kaggle Secrets `GEMINI_API_KEY` fetch fails with HTTP 400
+    (ConnectionError) in new sessions (worked 2026-10-15; reproducible
+    today on kernel v1-v4). Needs account-side fix; smoke kernel hard-fails
+    fast without it. Phase-2 diag tolerates it (no API calls needed).
+  - Phase-5 local demo: SIGKILL mid-run + resume -> no duplicate
+    experiments, clean max_rounds stop.
 - 2026-09-21 (final this session): PROJECT COMPLETE offline. Phases 0-6 built;
   Phase 7 (real A/B runs) and E13-E15 are Kaggle-only and remain UNVERIFIED.
   - `python -m pytest tests -q` → **100 passed** (E1-E12 + units + integration).
