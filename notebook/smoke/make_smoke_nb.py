@@ -47,13 +47,23 @@ except Exception as exc:
 '''
 
 CELL2 = '''# 2. Secret — HARD requirement for the smoke (Gemini calls happen). Fail fast.
-import os
+# Retries a few times: the Kaggle Secrets backend has been flaky (HTTP 400).
+import os, time
 from kaggle_secrets import UserSecretsClient
-try:
-    key = UserSecretsClient().get_secret('GEMINI_API_KEY')
-except Exception as exc:
-    print('secret fetch failed:', type(exc).__name__, str(exc)[:200])
-    raise
+key = None
+last_exc = None
+for attempt in range(4):
+    try:
+        key = UserSecretsClient().get_secret('GEMINI_API_KEY')
+        break
+    except Exception as exc:
+        last_exc = exc
+        print(f'secret fetch attempt {attempt + 1} failed:',
+              type(exc).__name__, str(exc)[:160])
+        time.sleep(15)
+if key is None:
+    print('GEMINI_API_KEY unfetchable after retries; cannot run the smoke')
+    raise last_exc
 assert key, 'GEMINI_API_KEY secret missing or empty'
 os.environ['GEMINI_API_KEY'] = key
 del key
