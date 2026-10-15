@@ -34,8 +34,16 @@ subprocess.run([sys.executable, '-m', 'pip', 'install', '-q',
                 '-r', 'requirements.txt'], check=True)
 subprocess.run([sys.executable, '-m', 'pip', 'install', '-q',
                 'rustbpe>=0.1.0', 'tiktoken>=0.11.0'], check=True)
-import torch
-print('torch', torch.__version(), 'devices', torch.cuda.device_count())
+# Informational only: the kernel's own torch is not used for training
+# (subprocesses import torch themselves); never block on it.
+try:
+    import torch
+    print('torch', torch.__version__, 'devices', torch.cuda.device_count())
+except Exception as exc:
+    print('kernel-process torch check failed (non-fatal):',
+          type(exc).__name__, str(exc)[:200])
+    import importlib.util
+    print('torch spec:', importlib.util.find_spec('torch'))
 '''
 
 CELL2 = '''# 2. Secret — HARD requirement for the smoke (Gemini calls happen). Fail fast.
