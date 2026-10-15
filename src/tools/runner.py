@@ -18,6 +18,7 @@ from . import metrics_parser
 # Whitelisted environment for the training subprocess (G7). Nothing else leaks.
 _ENV_WHITELIST = (
     "PATH", "HOME", "LANG", "LC_ALL", "CUDA_VISIBLE_DEVICES",
+    "LD_LIBRARY_PATH",  # Kaggle CUDA driver/runtime library visibility
     "PYTORCH_ALLOC_CONF", "HF_HUB_DISABLE_PROGRESS_BARS", "HF_HOME",
     "AUTORESEARCH_PREFLIGHT_STEPS",  # preflight hook (set by us, not secret)
     "MOCK_VAL_BPB", "MOCK_TRAIN_BEHAVIOR",  # mock-runner knobs (dry-run/tests)
@@ -45,6 +46,10 @@ def run_training(
     """Run one experiment. Always returns a RunResult (failures are data)."""
     hard_timeout = time_budget_s + startup_allowance_s
     env_extra = dict(extra_env or {})
+    # Align train.py's own TIME_BUDGET with the config knob: otherwise the
+    # child always trains the full prepare.TIME_BUDGET (300s) and a bounded
+    # run silently dies at hard_timeout with status=timeout (calibration bug B).
+    env_extra.setdefault("AUTORESEARCH_TIME_BUDGET", str(time_budget_s))
     if preflight_steps:
         env_extra["AUTORESEARCH_PREFLIGHT_STEPS"] = str(preflight_steps)
         hard_timeout = startup_allowance_s  # preflight should be quick

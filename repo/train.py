@@ -27,6 +27,10 @@ USE_COMPILE = False   # torch.compile is slow/fragile on T4; flip to experiment
 USE_FP16 = True       # T4 has fast fp16 tensor cores; bf16 is not accelerated
 MUON_DTYPE = torch.float16  # inner dtype for Muon orthogonalization matmuls
 PREFLIGHT_STEPS = int(os.environ.get("AUTORESEARCH_PREFLIGHT_STEPS", "0"))
+# Infra hook (autosearch_kaggle): src/tools/runner.py forwards the config knob
+# training.time_budget_s as AUTORESEARCH_TIME_BUDGET so bounded smoke runs can
+# shorten the fixed budget below. Unset (production / manual runs) keeps 300.
+TIME_BUDGET = int(os.environ.get("AUTORESEARCH_TIME_BUDGET", TIME_BUDGET))
 
 
 def maybe_compile(fn):

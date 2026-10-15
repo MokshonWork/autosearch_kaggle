@@ -20,6 +20,22 @@ class CalibrationReport:
     per_gpu: dict[int, list[float]] = field(default_factory=dict)
     epsilon: float = 0.0
     gpu_mean_diff: float = 0.0
+    # Invalid runs are DATA, not noise: keep them so a failed calibration is
+    # diagnosable (status, wall time, stdout tail per GPU — G10 / rule "never
+    # silently swallow training errors").
+    failures: list[RunResult] = field(default_factory=list)
+
+    def failure_summary(self, max_tail_lines: int = 12) -> str:
+        if not self.failures:
+            return "  (no failed calibration runs recorded)"
+        lines = []
+        for r in self.failures:
+            tail = "\n".join(r.stdout_tail.splitlines()[-max_tail_lines:])
+            indented = "\n".join(f"    {ln}" for ln in tail.splitlines())
+            lines.append(
+                f"  gpu{r.gpu} {r.hypothesis_id}: status={r.status} "
+                f"wall={r.wall_seconds:.1f}s steps={r.steps}\n{indented}")
+        return "\n".join(lines)
 
     def summary(self) -> str:
         std = statistics.stdev(self.values) if len(self.values) >= 2 else 0.0
@@ -58,6 +74,8 @@ def run_calibration(
                 if res.status == "ok" and res.val_bpb is not None:
                     report.values.append(res.val_bpb)
                     report.per_gpu.setdefault(gpu, []).append(res.val_bpb)
+                else:
+                    report.failures.append(res)
     report.epsilon = compute_epsilon(report.values, min_delta)
     if len(report.per_gpu) == 2 and all(report.per_gpu.values()):
         means = [statistics.mean(v) for v in report.per_gpu.values()]

@@ -47,14 +47,26 @@ def _resolve_source_repo(cfg) -> tuple[Path, str]:
         commit = subprocess.run(
             ["git", "-C", str(source), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True).stdout.strip()
-        subprocess.run(
-            ["git", "-C", str(source), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, check=True)
+        toplevel = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True).stdout.strip()
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"A/B source is not a valid git repo: {source}"
                            ) from e
     if not commit:
         raise RuntimeError(f"A/B source repo has no HEAD commit: {source}")
+    # Fail fast when repo/ has no .git of its own: `git -C repo rev-parse`
+    # would silently walk up to the OUTER repository, so arms would clone the
+    # wrong tree and every training run would fail with the misleading
+    # "calibration produced no valid runs". Source must be its own repo root.
+    toplevel = Path(toplevel).resolve()
+    if toplevel != source.resolve():
+        raise RuntimeError(
+            f"A/B source {source} is not its own git repository (git root is "
+            f"{toplevel}); nested repo/.git is missing — run: "
+            f"git -C {source} init && git -C {source} add -A && "
+            f"git -C {source} commit -m 'baseline' (notebook does this in "
+            "kaggle_run.ipynb cell 1)")
     return source, commit
 
 

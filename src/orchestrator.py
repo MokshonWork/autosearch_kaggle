@@ -205,6 +205,11 @@ class Orchestrator:
         best_commit = self.state["best_commit"]
         for wt in worktrees:
             git_ops.ensure_worktree(self.repo, wt, best_commit)
+            if not (wt / "train.py").exists():
+                raise RuntimeError(
+                    f"calibration worktree {wt} has no train.py — source "
+                    f"{self.repo} is not a training repo (nested repo/.git "
+                    "missing? re-init it, see notebook/kaggle_run.ipynb cell 1)")
         self.log("[calibration] running unmodified train.py on both GPUs...")
         from .calibration import run_calibration
         report = run_calibration(
@@ -212,7 +217,9 @@ class Orchestrator:
             self.cfg.training.time_budget_s, self.cfg.training.startup_allowance_s,
             self.cfg.decision.min_delta, runner=self.runner_fn)
         if not report.values:
-            raise RuntimeError("calibration produced no valid runs")
+            raise RuntimeError(
+                "calibration produced no valid runs\n"
+                f"{report.failure_summary()}")
         baseline = min(report.values)
         self.state.update(
             epsilon=report.epsilon, baseline_bpb=baseline,
