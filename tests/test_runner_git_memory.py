@@ -70,3 +70,12 @@ def test_memory_store(tmp_path):
     store.append_lesson("H-0001 did a thing, val_bpb=1.0.")
     store.append_lesson("H-0002 did another.")
     assert len(store.read_lessons()) == 2
+
+
+def test_create_mock_git_repo_is_idempotent(tmp_path):
+    """`make dry-run` regenerates the fixture in place; a second create must
+    not fail with 'nothing to commit' (regression: CalledProcessError)."""
+    target = tmp_path / "mock"
+    create_mock_git_repo(target)
+    create_mock_git_repo(target)  # previously raised CalledProcessError
+    assert (target / "train.py").exists()

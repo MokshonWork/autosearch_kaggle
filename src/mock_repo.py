@@ -18,7 +18,9 @@ def create_mock_git_repo(target: Path) -> Path:
         shutil.copy(FIXTURES / name, target / name)
     for args in (["init", "-q"], ["add", "-A"],
                  ["-c", "user.email=mock@local", "-c", "user.name=mock",
-                  "commit", "-q", "-m", "mock baseline"]):
+                  # --allow-empty: re-running the generator on an existing
+                  # fixture (make dry-run) must not die on "nothing to commit"
+                  "commit", "-q", "--allow-empty", "-m", "mock baseline"]):
         subprocess.run(["git", "-C", str(target), *args], check=True)
     return target
 
