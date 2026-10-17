@@ -19,6 +19,7 @@ import os, subprocess, sys
 from pathlib import Path
 WORK = Path('/kaggle/working')
 PROJ = WORK / 'autosearch_kaggle'
+os.chdir(WORK)  # never rmtree the directory the kernel is currently sitting in
 if PROJ.exists():
     import shutil; shutil.rmtree(PROJ)
 subprocess.run(['git', 'clone', '-q',
