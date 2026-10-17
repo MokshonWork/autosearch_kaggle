@@ -218,6 +218,16 @@ checks = {
     'gpu_ids_valid': all(e['worker'] in (0, 1) for e in exps),
     'ab_report_exists': (out / 'ab_report.md').exists(),
 }
+summary = {
+    'checks': checks,
+    'state': {k: state.get(k) for k in (
+        'round', 'experiments_done', 'baseline_bpb', 'best_val_bpb',
+        'epsilon', 'calibration_values', 'stopped_reason', 'api_calls',
+        'api_tokens')},
+    'experiments': [f"{e['hypothesis']['id']}:{e['result']['status']}"
+                    for e in exps],
+}
+(out / 'smoke_summary.json').write_text(json.dumps(summary, indent=2))
 failed = [k for k, v in checks.items() if not v]
 if failed:
     print('state summary:')
