@@ -1,6 +1,7 @@
 # All knobs in one place. Secrets are NEVER in this file.
 llm:
-  provider: gemini
+  provider: gemini        # gemini (campaign default) | groq (needs GROQ_API_KEY
+                          # secret + Groq model ids in every model_* / fallback slot)
   model_ideator: gemini-2.5-flash
   model_coder: gemini-2.5-flash
   model_guard: gemini-2.5-flash

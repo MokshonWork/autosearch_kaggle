@@ -33,6 +33,18 @@
     fast without it. Phase-2 diag tolerates it (no API calls needed).
   - Phase-5 local demo: SIGKILL mid-run + resume -> no duplicate
     experiments, clean max_rounds stop.
+- 2026-10-16 (later): smoke iteration found + fixed three more real bugs:
+  (1) cell-1 re-run rmtree'd its own cwd (git clone exit 128) -> chdir first;
+  (2) retired fallback model gemini-2.5-flash-lite -> HTTP 404 -> config now
+  gemini-3.6-flash, client fast-fails non-retryable 4xx, 6x backoff,
+  contextual LLMError; (3) LLMError now stops the orchestrator GRACEFULLY
+  (state saved, stopped_reason=LLMError). Model-id probe cell (2b) added.
+  PLATFORM FINDING: secrets load fine in UI-triggered runs but HTTP 400 in
+  every API/CLI-triggered session (~20 attempts vs 1 UI success) -> secret-
+  dependent runs (smoke, campaign) must be started from the Kaggle UI.
+  Calibration + secret + data prep all verified green inside a live smoke
+  run (baseline 1.931047). Groq added as selectable provider
+  (llm.provider: groq; default stays gemini). Tests: 161 pass.
 - 2026-09-21 (final this session): PROJECT COMPLETE offline. Phases 0-6 built;
   Phase 7 (real A/B runs) and E13-E15 are Kaggle-only and remain UNVERIFIED.
   - `python -m pytest tests -q` → **100 passed** (E1-E12 + units + integration).

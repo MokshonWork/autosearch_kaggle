@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import load_config  # noqa: E402
-from src.llm.client import BudgetTracker, GeminiClient, MockLLMClient  # noqa: E402
+from src.llm.client import BudgetTracker, MockLLMClient, make_client  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 
 
@@ -116,7 +116,7 @@ def run_arm(cfg, arm: str, repeat: int, out_root: Path, *,
         from src.mock_handlers import default_handlers
         client = MockLLMClient(cfg.llm, budget, default_handlers())
     else:
-        client = GeminiClient(cfg.llm, budget)
+        client = make_client(cfg.llm, budget)
     t0 = time.time()
     orch = Orchestrator(cfg, client)
     state = orch.run()

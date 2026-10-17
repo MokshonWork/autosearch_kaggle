@@ -727,7 +727,7 @@ class Orchestrator:
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-    from .llm.client import BudgetTracker, GeminiClient, MockLLMClient
+    from .llm.client import BudgetTracker, MockLLMClient, make_client
 
     parser = argparse.ArgumentParser(description="autoresearch-team orchestrator")
     parser.add_argument("--config", default="config.yaml")
@@ -746,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
         from .mock_handlers import default_handlers
         client = MockLLMClient(cfg.llm, budget, default_handlers())
     else:
-        client = GeminiClient(cfg.llm, budget)
+        client = make_client(cfg.llm, budget)
     Orchestrator(cfg, client).run()
     return 0
 

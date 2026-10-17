@@ -184,6 +184,88 @@ class GeminiClient(BaseClient):
         raise LLMError(f"gemini call failed: {last_err}")
 
 
+class GroqClient(BaseClient):
+    """Groq (OpenAI-compatible REST) — selectable via llm.provider: groq.
+
+    Same contract as GeminiClient: Bearer key from env (never printed),
+    6x exponential backoff on retryable errors, non-retryable fast-fail to
+    cfg.fallback_model (a GROQ model id), terminal failure -> LLMError with
+    BOTH primary and fallback context. JSON mode on (all our prompts ask
+    for JSON, which Groq requires for response_format json_object).
+    """
+
+    BASE = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, cfg: LLMConfig, budget: BudgetTracker):
+        super().__init__(cfg, budget)
+        import requests  # local import keeps tests dependency-light
+        self._requests = requests
+        self._api_key = os.environ.get(cfg.api_key_env, "")
+        if not self._api_key:
+            raise LLMError(
+                f"missing API key: set env {cfg.api_key_env} (Kaggle Secrets)")
+
+    def _raw_generate(self, agent: str, prompt: str) -> tuple[str, int]:
+        model = self.cfg.model_for(agent)
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.cfg.temperatures.get(agent, 0.3),
+            "max_tokens": self.cfg.max_output_tokens.get(agent, 1024),
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Authorization": f"Bearer {self._api_key}",
+                   "Content-Type": "application/json"}
+        delay = 2.0
+        last_err = "unknown"
+        retryable = (429, 500, 502, 503, 504)
+        for _ in range(6):
+            try:
+                resp = self._requests.post(
+                    self.BASE, json=body, timeout=self.cfg.timeout_s,
+                    headers=headers)
+                if resp.status_code in retryable:
+                    last_err = f"HTTP {resp.status_code}"
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                tokens = data.get("usage", {}).get(
+                    "total_tokens", len(prompt) // 4 + len(text) // 4)
+                return text, int(tokens)
+            except self._requests.exceptions.HTTPError as e:
+                code = e.response.status_code if e.response is not None else 0
+                last_err = f"HTTP {code}"
+                break
+            except self._requests.exceptions.RequestException as e:
+                last_err = redact(str(e))[:200]
+                time.sleep(delay)
+                delay *= 2
+            except (KeyError, IndexError, TypeError, ValueError) as e:
+                last_err = f"bad groq response: {redact(str(e))[:160]}"
+                break
+        fb = self.cfg.fallback_model
+        if fb and fb != model:
+            fb_body = dict(body, model=fb)
+            try:
+                resp = self._requests.post(
+                    self.BASE, json=fb_body, timeout=self.cfg.timeout_s,
+                    headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                return text, int(data.get("usage", {}).get(
+                    "total_tokens", len(prompt) // 4))
+            except (self._requests.exceptions.RequestException,
+                    KeyError, IndexError, TypeError, ValueError) as e:
+                raise LLMError(
+                    f"groq primary '{model}' failed ({last_err}); "
+                    f"fallback '{fb}' failed: {redact(str(e))[:200]}") from e
+        raise LLMError(f"groq call failed: {last_err}")
+
+
 class MockLLMClient(BaseClient):
     """Deterministic fake client (G19). Handlers map agent -> canned output.
 
@@ -211,3 +293,17 @@ class MockLLMClient(BaseClient):
             out = handler
         text = out if isinstance(out, str) else json.dumps(out)
         return text, 100  # fixed fake token cost
+
+
+def make_client(cfg: LLMConfig, budget: BudgetTracker):
+    """Dispatch on cfg.provider. Unknown providers fail fast (never silently).
+
+    Campaign default remains 'gemini'; 'groq' is a validated alternative
+    (same schema/budget/guardrails — the science does not depend on vendor).
+    """
+    provider = (cfg.provider or "gemini").lower()
+    if provider == "gemini":
+        return GeminiClient(cfg, budget)
+    if provider == "groq":
+        return GroqClient(cfg, budget)
+    raise LLMError(f"unknown llm.provider '{provider}' (expected gemini|groq)")
