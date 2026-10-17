@@ -132,12 +132,13 @@ class GeminiClient(BaseClient):
         }
         delay = 2.0
         last_err = "unknown"
-        for _ in range(4):  # exponential backoff on rate limits (G13)
+        retryable = (429, 500, 502, 503, 504)
+        for _ in range(6):  # exponential backoff on rate limits (G13)
             try:
                 resp = self._requests.post(
                     url, json=body, timeout=self.cfg.timeout_s,
                     headers={"x-goog-api-key": self._api_key})
-                if resp.status_code in (429, 500, 502, 503, 504):
+                if resp.status_code in retryable:
                     last_err = f"HTTP {resp.status_code}"
                     time.sleep(delay)
                     delay *= 2
@@ -148,20 +149,38 @@ class GeminiClient(BaseClient):
                 tokens = data.get("usageMetadata", {}).get(
                     "totalTokenCount", len(prompt) // 4 + len(text) // 4)
                 return text, int(tokens)
-            except self._requests.RequestException as e:
-                last_err = redact(str(e))
+            except self._requests.exceptions.HTTPError as e:
+                # non-retryable 4xx (retired model id, bad key, 400...):
+                # it will not heal — go straight to the fallback.
+                code = e.response.status_code if e.response is not None else 0
+                last_err = f"HTTP {code}"
+                break
+            except self._requests.exceptions.RequestException as e:
+                last_err = redact(str(e))[:200]
                 time.sleep(delay)
                 delay *= 2
+            except (KeyError, IndexError, TypeError, ValueError) as e:
+                last_err = f"bad gemini response: {redact(str(e))[:160]}"
+                break
         if self.cfg.fallback_model and model != self.cfg.fallback_model:
-            url = url.replace(model, self.cfg.fallback_model)
-            resp = self._requests.post(
-                url, json=body, timeout=self.cfg.timeout_s,
-                headers={"x-goog-api-key": self._api_key})
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return text, int(data.get("usageMetadata", {}).get(
-                "totalTokenCount", len(prompt) // 4))
+            # A retired/404 fallback previously raised a raw HTTPError here
+            # that killed an entire run; surface BOTH failures as LLMError.
+            fb = self.cfg.fallback_model
+            fb_url = url.replace(model, fb)
+            try:
+                resp = self._requests.post(
+                    fb_url, json=body, timeout=self.cfg.timeout_s,
+                    headers={"x-goog-api-key": self._api_key})
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                return text, int(data.get("usageMetadata", {}).get(
+                    "totalTokenCount", len(prompt) // 4))
+            except (self._requests.exceptions.RequestException,
+                    KeyError, IndexError, TypeError, ValueError) as e:
+                raise LLMError(
+                    f"gemini primary '{model}' failed ({last_err}); "
+                    f"fallback '{fb}' failed: {redact(str(e))[:200]}") from e
         raise LLMError(f"gemini call failed: {last_err}")
 
 

@@ -71,6 +71,28 @@ del key
 print('GEMINI_API_KEY loaded:', bool(os.environ.get('GEMINI_API_KEY')))
 '''
 
+CELL2B = '''# 2b. Verify every configured Gemini model id responds (assumption A6:
+# "verify current IDs on run day"). Fail fast BEFORE any expensive step.
+import yaml, requests as rq
+from pathlib import Path
+cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
+ids = sorted({v for v in cfg['llm'].values()
+              if isinstance(v, str) and v.startswith('gemini-')})
+print('probing configured model ids:', ids)
+key_hdr = {'x-goog-api-key': os.environ['GEMINI_API_KEY']}
+for mid in ids:
+    r = rq.post(
+        f'https://generativelanguage.googleapis.com/v1beta/models/'
+        f'{mid}:generateContent',
+        json={'contents': [{'parts': [{'text': 'Reply with the word: ok'}]}]},
+        headers=key_hdr, timeout=30)
+    print(f'  {mid} -> HTTP {r.status_code}')
+    assert r.status_code == 200, (
+        f'model id {mid} unusable (HTTP {r.status_code}); '
+        'update llm model ids in config, re-push, re-run')
+print('all configured model ids OK')
+'''
+
 CELL3 = '''# 3. Nested repo/.git + data prep (skips if cache already present).
 import subprocess, sys
 from pathlib import Path
@@ -168,7 +190,7 @@ cells = [
        "2 experiments with a 10s training budget. Validates WIRING, not science.\n",
        "Expected wall time ~25-40 min (incl. data prep). Requires the\n",
        "GEMINI_API_KEY secret (checked BEFORE any expensive step)."),
-    code(CELL1), code(CELL2), code(CELL3), code(CELL4), code(CELL5),
+    code(CELL1), code(CELL2), code(CELL2B), code(CELL3), code(CELL4), code(CELL5),
 ]
 
 nb = {"cells": cells,

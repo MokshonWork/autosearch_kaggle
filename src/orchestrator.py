@@ -22,7 +22,7 @@ from .agents.ideator import Ideator
 from .agents.librarian import Librarian, lesson_line, untried_categories
 from .config import Config
 from .decision import decide, decide_retest, plausibility_floor
-from .llm.client import BudgetExhausted, BudgetTracker
+from .llm.client import BudgetExhausted, BudgetTracker, LLMError
 from .memory.store import CorruptStateError, MemoryStore
 from .registry import ChangeRecord, Registry, TestReport, new_id
 from .scheduler import Scheduler, build_context, content_fingerprint, discover_gpus
@@ -193,7 +193,10 @@ class Orchestrator:
                     break
                 self._round()
             self.hash_registry.verify()  # G1 final check
-        except (BudgetExhausted, ProtectedFileError) as e:
+        except (BudgetExhausted, ProtectedFileError, LLMError) as e:
+            # LLMError: terminal API failure after backoff+fallback — stop
+            # GRACEFULLY (state saved, resume-able) instead of crashing the
+            # whole A/B session mid-round.
             self.save_state(type(e).__name__)
             self.log(f"[orchestrator] stopping: {type(e).__name__}: {e}")
         return self.state
