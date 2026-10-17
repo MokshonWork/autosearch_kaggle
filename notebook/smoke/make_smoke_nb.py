@@ -154,8 +154,40 @@ assert p.returncode == 0, 'run_ab failed — see logs above'
 CELL5 = '''# 5. Validate wiring evidence: state, experiments, budgets, metrics.
 import json, math
 from pathlib import Path
+
 out = Path('/kaggle/working/smoke_results')
 mem = out / 'multi_agent' / 'run0' / 'memory'
+
+# 5a. Did the A/B runner (cell 4) produce its wiring evidence at all?
+#     Cell 4 asserts run_ab exit 0, so if memory/ is missing everything below
+#     is explained by the runner dying BEFORE writing any experiment.
+required = {
+    'state.json': mem / 'state.json',
+    'experiments.jsonl': mem / 'experiments.jsonl',
+    'lessons.md': mem / 'lessons.md',
+}
+missing = [name for name, p in required.items() if not p.exists()]
+if missing:
+    print('smoke_results/memory directory listing:')
+    if mem.exists():
+        for p in sorted(mem.glob('*')):
+            print('  ', p)
+    print('MISSING: ' + ', '.join(missing))
+    print('run_ab stdout -> /kaggle/working/smoke_results/run_ab_stdout.log')
+    print('run_ab stderr -> /kaggle/working/smoke_results/run_ab_stderr.log')
+    raise AssertionError(
+        'smoke run produced NO experiments: the A/B runner died before writing '
+        'its memory (experiments.jsonl missing).\n'
+        'Read /kaggle/working/smoke_results/run_ab_stderr.log AND the kernel '
+        'output above. The first thing the runner does is calibration '
+        '(Section 6.4): if the unmodified train.py fails there (status '
+        'timeout/crash/nan) it aborts the whole run with e.g.\n'
+        '    RuntimeError: calibration produced no valid runs\n'
+        'and NO experiment is ever written. Fix the training budget / data '
+        'prep and re-push, re-run.')
+for p in sorted(mem.glob('*')):
+    print('memory file:', p)
+
 state = json.loads((mem / 'state.json').read_text())
 exps = [json.loads(l) for l in
         (mem / 'experiments.jsonl').read_text().splitlines() if l.strip()]
@@ -167,6 +199,7 @@ for e in exps:
     hid = e['hypothesis']['id']
     print(f"{hid} gpu{e['worker']} {r['status']} "
           f"val_bpb={r['val_bpb']} steps={r['steps']} wall={r['wall_seconds']}s")
+
 checks = {
     'epsilon_set': state.get('epsilon') is not None,
     'baseline_finite': (state.get('baseline_bpb') is not None
@@ -185,20 +218,21 @@ checks = {
     'gpu_ids_valid': all(e['worker'] in (0, 1) for e in exps),
     'ab_report_exists': (out / 'ab_report.md').exists(),
 }
-summary = {
-    'checks': checks,
-    'state': {k: state.get(k) for k in (
-        'round', 'experiments_done', 'baseline_bpb', 'best_val_bpb',
-        'epsilon', 'calibration_values', 'stopped_reason', 'api_calls',
-        'api_tokens')},
-    'experiments': [f"{e['hypothesis']['id']}:{e['result']['status']}"
-                    for e in exps],
-}
-(out / 'smoke_summary.json').write_text(json.dumps(summary, indent=2))
-print(json.dumps(checks, indent=2))
 failed = [k for k, v in checks.items() if not v]
-assert not failed, f'smoke checks failed: {failed}'
+if failed:
+    print('state summary:')
+    print(json.dumps({k: state.get(k) for k in (
+        'round', 'experiments_done', 'baseline_bpb', 'best_val_bpb',
+        'epsilon', 'stopped_reason', 'api_calls', 'api_tokens')}, indent=2))
+    print('experiments:')
+    for e in exps:
+        print(' ', e['hypothesis']['id'], e['result']['status'],
+              e['result'].get('val_bpb'), e['result'].get('steps'),
+              e['result'].get('wall_seconds'))
+    raise AssertionError('smoke checks failed: ' + ', '.join(failed))
+print(json.dumps(checks, indent=2))
 print('SMOKE_COMPLETE_ALL_CHECKS_PASS')
+
 '''
 
 cells = [
