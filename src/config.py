@@ -9,12 +9,12 @@ from pydantic import BaseModel, Field
 
 class LLMConfig(BaseModel):
     provider: str = "gemini"
-    model_ideator: str = "gemini-2.5-flash"
-    model_coder: str = "gemini-2.5-flash"
-    model_guard: str = "gemini-2.5-flash"
-    model_analyst: str = "gemini-2.5-flash"
-    model_librarian: str = "gemini-2.5-flash"
-    fallback_model: str = "gemini-2.5-flash-lite"
+    model_ideator: str = "gemini-3.6-flash"
+    model_coder: str = "gemini-3.6-flash"
+    model_guard: str = "gemini-3.6-flash"
+    model_analyst: str = "gemini-3.6-flash"
+    model_librarian: str = "gemini-3.6-flash"
+    fallback_model: str = "gemini-3.8-flash"
     temperatures: dict[str, float] = Field(default_factory=dict)
     max_output_tokens: dict[str, int] = Field(default_factory=dict)
     timeout_s: int = 60

@@ -71,43 +71,43 @@ del key
 print('GEMINI_API_KEY loaded:', bool(os.environ.get('GEMINI_API_KEY')))
 '''
 
-CELL2B = '''# 2b. Verify every configured model id responds (assumption A6: "verify
-# current IDs on run day"). Works for provider gemini | groq. Fail fast
-# BEFORE any expensive step.
+CELL2B = '''
+# 2b. Model availability check (assumption A6: verify current IDs on run. Probes EVERY candidate in ONE run, prints a table, then decides.)
+# Fail fast BEFORE any expensive step.
 import yaml, requests as rq
 from pathlib import Path
 cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
 llm = cfg['llm']
 provider = llm.get('provider', 'gemini')
 api_env = llm.get('api_key_env', 'GEMINI_API_KEY')
-if provider == 'groq':
-    ids = sorted({v for k, v in llm.items()
-                  if (k.startswith('model_') or k == 'fallback_model')
-                  and isinstance(v, str)})
-else:
-    ids = sorted({v for v in llm.values()
-                  if isinstance(v, str) and v.startswith('gemini-')})
-assert ids, f'no model ids found in llm config for provider {provider}'
-print(f'probing {provider} model ids:', ids)
+ids = sorted({v for v in llm.values() if isinstance(v, str) and v.startswith('gemini-')})
+ids |= {'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-4-argon'}
+print('probing model availability:', ids)
+results = {}
 for mid in ids:
     if provider == 'groq':
         r = rq.post('https://api.groq.com/openai/v1/chat/completions',
                     json={'model': mid,
                           'messages': [{'role': 'user',
                                         'content': 'Reply with the word: ok'}]},
-                    headers={'Authorization': f"Bearer {os.environ[api_env]}",
+                    headers={'Authorization': 'Bearer ' + os.environ[api_env],
                              'Content-Type': 'application/json'},
                     timeout=30)
     else:
         r = rq.post(
-            f'https://generativelanguage.googleapis.com/v1beta/models/'
-            f'{mid}:generateContent',
+            'https://generativelanguage.googleapis.com/v1beta/models/' + mid + ':generateContent',
             json={'contents': [{'parts': [{'text': 'Reply with the word: ok'}]}]},
             headers={'x-goog-api-key': os.environ[api_env]}, timeout=30)
-    print(f'  {mid} -> HTTP {r.status_code}')
-    assert r.status_code == 200, (
-        f'model id {mid} unusable (HTTP {r.status_code}); '
-        'update llm model ids in config, re-push, re-run')
+    results[mid] = r.status_code
+    print('  ' + mid + ' -> HTTP ' + str(r.status_code))
+dead = [m for m in ids if results[m] != 200]
+if dead:
+    alive = sorted({m for m in ids if results[m] == 200})
+    print('STILL USABLE:', alive)
+    lines = []
+    for m in sorted(results):
+        lines.append('  ' + m + ': HTTP ' + str(results[m]))
+    raise AssertionError('configured model id(s) unreachable (HTTP 404 / 400) - probe table below:' + chr(10).join(lines))
 print('all configured model ids OK')
 '''
 

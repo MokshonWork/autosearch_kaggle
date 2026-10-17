@@ -69,8 +69,8 @@ def gemini(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", API_KEY)
     monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
     cfg = SimpleNamespace(
-        model_for=lambda agent: "gemini-2.5-flash",
-        fallback_model="gemini-3.6-flash",
+        model_for=lambda agent: "gemini-3.6-flash",
+        fallback_model="gemini-3.8-flash",
         temperatures={}, max_output_tokens={},
         timeout_s=5, max_retries=1, api_key_env="GEMINI_API_KEY")
     client = GeminiClient(cfg, BudgetTracker(500, 100_000, 30))
@@ -88,7 +88,8 @@ def test_primary_404_skips_retries_and_falls_back(gemini):
     text, tokens = gemini._raw_generate("librarian", "p")
     assert text == "ok" and tokens == 7
     assert len(fake.calls) == 2, "404 must not burn backoff retries"
-    assert "gemini-3.6-flash" in fake.calls[1]
+    assert "gemini-3.6-flash" in fake.calls[0]
+    assert "gemini-3.8-flash" in fake.calls[1]
 
 
 def test_retired_fallback_raises_llmerror_with_both_contexts(gemini):
@@ -96,8 +97,8 @@ def test_retired_fallback_raises_llmerror_with_both_contexts(gemini):
     with pytest.raises(LLMError) as exc:
         gemini._raw_generate("coder", "p")
     msg = str(exc.value)
-    assert "primary 'gemini-2.5-flash' failed (HTTP 404)" in msg
-    assert "fallback 'gemini-3.6-flash' failed" in msg
+    assert "primary 'gemini-3.6-flash' failed (HTTP 404)" in msg
+    assert "fallback 'gemini-3.8-flash' failed" in msg
     assert API_KEY not in msg  # never leak the key
 
 
@@ -113,7 +114,7 @@ def test_retryable_exhausted_uses_fallback(gemini):
     text, tokens = gemini._raw_generate("guard", "p")
     assert text == "ok" and tokens == 7
     assert len(fake.calls) == 7
-    assert "gemini-3.6-flash" in fake.calls[-1]
+    assert "gemini-3.8-flash" in fake.calls[-1]
 
 
 def test_connection_errors_also_fall_back(gemini):

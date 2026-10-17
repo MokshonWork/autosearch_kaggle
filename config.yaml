@@ -2,12 +2,12 @@
 llm:
   provider: gemini        # gemini (campaign default) | groq (needs GROQ_API_KEY
                           # secret + Groq model ids in every model_* / fallback slot)
-  model_ideator: gemini-2.5-flash
-  model_coder: gemini-2.5-flash
-  model_guard: gemini-2.5-flash
-  model_analyst: gemini-2.5-flash
-  model_librarian: gemini-2.5-flash
-  fallback_model: gemini-3.6-flash    # 2026-10 A6 check: gemini-2.5-flash-lite now 404s
+  model_ideator: gemini-3.6-flash
+  model_coder: gemini-3.6-flash
+  model_guard: gemini-3.6-flash
+  model_analyst: gemini-3.6-flash
+  model_librarian: gemini-3.6-flash
+  fallback_model: gemini-3.6-flash    # 2026-10 A6 check: gemini-2.5-flash now 404s
   temperatures: {ideator: 0.7, coder: 0.2, guard: 0.1, analyst: 0.3, librarian: 0.3}
   max_output_tokens: {ideator: 1200, coder: 4096, guard: 800, analyst: 800, librarian: 1500}
   timeout_s: 60
