@@ -80,8 +80,8 @@ cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
 llm = cfg['llm']
 provider = llm.get('provider', 'gemini')
 api_env = llm.get('api_key_env', 'GEMINI_API_KEY')
-ids = sorted({v for v in llm.values() if isinstance(v, str) and v.startswith('gemini-')})
-ids |= {'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-4-argon'}
+ids = sorted({v for v in llm.values() if isinstance(v, str) and v.startswith('gemini-')}
+             | {'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-4-argon'})
 print('probing model availability:', ids)
 results = {}
 for mid in ids:
