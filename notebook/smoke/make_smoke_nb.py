@@ -175,16 +175,19 @@ if missing:
     print('MISSING: ' + ', '.join(missing))
     print('run_ab stdout -> /kaggle/working/smoke_results/run_ab_stdout.log')
     print('run_ab stderr -> /kaggle/working/smoke_results/run_ab_stderr.log')
-    raise AssertionError(
-        'smoke run produced NO experiments: the A/B runner died before writing '
-        'its memory (experiments.jsonl missing).\n'
-        'Read /kaggle/working/smoke_results/run_ab_stderr.log AND the kernel '
-        'output above. The first thing the runner does is calibration '
-        '(Section 6.4): if the unmodified train.py fails there (status '
-        'timeout/crash/nan) it aborts the whole run with e.g.\n'
-        '    RuntimeError: calibration produced no valid runs\n'
-        'and NO experiment is ever written. Fix the training budget / data '
-        'prep and re-push, re-run.')
+    msg_lines = [
+        'smoke run produced NO experiments: the A/B runner died',
+        'before writing its memory (experiments.jsonl missing).',
+        'Read /kaggle/working/smoke_results/run_ab_stderr.log',
+        'AND the kernel output above. The first thing the runner',
+        'does is calibration (Section 6.4): if the unmodified',
+        'train.py fails there (status timeout/crash/nan) it aborts',
+        'the whole run with e.g.',
+        '    RuntimeError: calibration produced no valid runs',
+        'and NO experiment is ever written. Fix the training',
+        'budget / data prep and re-push, re-run.',
+    ]
+    raise AssertionError(chr(10).join(msg_lines))
 for p in sorted(mem.glob('*')):
     print('memory file:', p)
 
