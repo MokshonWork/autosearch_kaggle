@@ -48,26 +48,28 @@ except Exception as exc:
 '''
 
 CELL2 = '''# 2. Secret — HARD requirement for the smoke (Gemini calls happen). Fail fast.
-# Retries a few times: the Kaggle Secrets backend has been flaky (HTTP 400).
-import os, time
-from kaggle_secrets import UserSecretsClient
-key = None
-last_exc = None
-for attempt in range(4):
-    try:
-        key = UserSecretsClient().get_secret('GEMINI_API_KEY')
-        break
-    except Exception as exc:
-        last_exc = exc
-        print(f'secret fetch attempt {attempt + 1} failed:',
-              type(exc).__name__, str(exc)[:160])
-        time.sleep(15)
-if key is None:
-    print('GEMINI_API_KEY unfetchable after retries; cannot run the smoke')
-    raise last_exc
-assert key, 'GEMINI_API_KEY secret missing or empty'
-os.environ['GEMINI_API_KEY'] = key
-del key
+# NOTE: do NOT use kaggle_secrets.UserSecretsClient directly. Kaggle injects
+# KAGGLE_URL_BASE=https://api.kaggle.com, but the UserSecretsService endpoint
+# is served only by https://www.kaggle.com; against the injected host every
+# request returns HTTP 400 with an empty body, which kaggle_web_client
+# flattens into a generic ConnectionError (the "flaky backend" red herring).
+# src/kaggle_secret.py talks to the working host directly and turns the
+# server's answer into an actionable message:
+#   * "not attached to this kernel"  -> attach it in the Kaggle UI
+#   * 400 / empty body               -> the real routing/backend symptom
+import os, sys
+sys.path.insert(0, '/kaggle/working/autosearch_kaggle')
+from src.kaggle_secret import (load_api_key, SecretNotAttachedError,
+                               SecretAuthError, SecretBackendError)
+try:
+    load_api_key('GEMINI_API_KEY')
+except SecretNotAttachedError as exc:
+    print('SECRET NOT ATTACHED:', exc)
+    raise
+except (SecretAuthError, SecretBackendError) as exc:
+    print('SECRET FETCH FAILED:', type(exc).__name__, exc)
+    raise
+assert os.environ.get('GEMINI_API_KEY'), 'GEMINI_API_KEY secret missing or empty'
 print('GEMINI_API_KEY loaded:', bool(os.environ.get('GEMINI_API_KEY')))
 '''
 

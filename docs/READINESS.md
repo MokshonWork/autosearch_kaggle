@@ -16,6 +16,14 @@
 1. Smoke (`autosearch-smoke`) COMPLETE with all checks green — currently
    BLOCKED on one manual step: attach `GEMINI_API_KEY` to the kernel in the
    Kaggle UI (Add-ons → Secrets). CLI cannot attach secrets (Kaggle #582).
+   - Secret retrieval itself was fixed on 2026-10-19: the failure was NOT a
+     flaky backend. Kaggle injects `KAGGLE_URL_BASE=https://api.kaggle.com`,
+     but the user-secrets endpoint is only served by `https://www.kaggle.com`;
+     `api.kaggle.com` answers HTTP 400 with an empty body, which
+     `kaggle_web_client` masks as `ConnectionError`. `src/kaggle_secret.py`
+     now queries the working host and says plainly whether the secret is
+     simply not attached to this kernel (Kaggle error code 5) or the request
+     really failed. See `docs/ASSUMPTIONS.md` A4.
 2. Explicit user approval for the campaign (rule 6).
 
 ## Exact launch commands (one arm-repeat per session, ~2.3 h each)
