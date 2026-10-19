@@ -122,6 +122,38 @@ def _post(base: str, label: str, timeout: int) -> tuple[int, str]:
         return 0, f"{type(exc).__name__}: {exc}"
 
 
+def _redact(payload: str, limit: int = 600) -> str:
+    """Return the response body with any secret-looking value masked.
+
+    Used for diagnostics only. The raw body is invaluable for telling the
+    real response shape apart from the shape we assumed, but it may contain
+    the secret itself, so every string value longer than 8 characters is
+    replaced by a placeholder before the body is logged.
+    """
+    if not payload:
+        return ""
+    try:
+        doc = json.loads(payload)
+    except ValueError:
+        return payload[:limit]
+    try:
+        masked = json.loads(payload)
+    except ValueError:                                       # pragma: no cover
+        return payload[:limit]
+
+    def _mask(node):
+        if isinstance(node, dict):
+            return {k: _mask(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_mask(v) for v in node]
+        if isinstance(node, str) and len(node) > 8:
+            return node[:4] + f"...<masked {len(node)} chars>"
+        return node
+
+    masked = _mask(masked)
+    return json.dumps(masked)[:limit]
+
+
 def _classify(status: int, payload: str, label: str) -> str:
     """Return the secret value, or raise the most specific error we can."""
     if status == 0:
@@ -152,15 +184,19 @@ def _classify(status: int, payload: str, label: str) -> str:
                 code = (doc.get("error") or {}).get("code")
             else:
                 result = doc.get("result")
+                # The real contract (Kaggle/docker-python patches/kaggle_secrets.py
+                # -> get_secret) is a top-level "secret" key inside "result":
+                #     {"wasSuccessful": true, "result": {"secret": "..."}}
+                # "value"/"secretValue" are accepted as aliases.
                 if isinstance(result, dict):
-                    value = result.get("value")
-                    if value is None:
-                        value = result.get("secretValue")
-                    if value:
-                        return str(value)
+                    for key in ("secret", "value", "secretValue"):
+                        value = result.get(key)
+                        if value:
+                            return str(value)
                 elif isinstance(result, str) and result:
                     return result
-                detail = "response contained no secret value"
+                detail = ("response contained no secret value (result keys: "
+                          f"{sorted(result) if isinstance(result, dict) else type(result).__name__})")
 
     if "no user secrets exist" in detail.lower() or code == 5:
         kernel_id = ""
@@ -180,6 +216,7 @@ def _classify(status: int, payload: str, label: str) -> str:
         raise SecretBackendError(
             f"the secrets service returned a failure for label {label!r}: "
             f"{detail[:300]}"
+            + (f" | body: {_redact(payload)}" if payload else "")
         )
     raise SecretBackendError(
         f"the secrets service rejected the request for label {label!r} "

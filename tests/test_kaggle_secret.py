@@ -78,8 +78,10 @@ def test_empty_body_400_reports_backend_error_not_attached(monkeypatch):
 
 
 def test_success_returns_value_and_repairs_url_base(monkeypatch):
+    # The REAL Kaggle contract (Kaggle/docker-python patches/kaggle_secrets.py):
+    #   {"wasSuccessful": true, "result": {"secret": "<value>"}}
     body = json.dumps({"wasSuccessful": True,
-                        "result": {"value": "s3cr3t-value"}})
+                        "result": {"secret": "s3cr3t-value"}})
     _install(monkeypatch, {"https://www.kaggle.com": [(200, body)]})
     value = ks.fetch_secret("GEMINI_API_KEY")
     assert value == "s3cr3t-value"
@@ -87,8 +89,45 @@ def test_success_returns_value_and_repairs_url_base(monkeypatch):
     assert ks.os.environ[ks.URL_BASE_ENV] == "https://www.kaggle.com"
 
 
+def test_real_kaggle_success_shape_is_parsed(monkeypatch):
+    """Regression: the response nests the value under result.secret."""
+    body = json.dumps({"wasSuccessful": True, "result": {"secret": "AIzaSyREAL"}})
+    _install(monkeypatch, {"https://www.kaggle.com": [(200, body)]})
+    assert ks.fetch_secret("GEMINI_API_KEY") == "AIzaSyREAL"
+
+
+def test_success_shape_without_secret_reports_result_keys(monkeypatch):
+    """A 200 with an unexpected shape must say WHAT it saw, not just fail."""
+    body = json.dumps({"wasSuccessful": True, "result": {"unexpected": "x"}})
+    _install(monkeypatch, {
+        "https://www.kaggle.com": [(200, body)],
+        "https://api.kaggle.com": [(400, "")],
+    })
+    with pytest.raises(ks.SecretBackendError) as exc:
+        ks.fetch_secret("GEMINI_API_KEY")
+    msg = str(exc.value)
+    assert "no secret value" in msg
+    assert "unexpected" in msg          # names the keys actually seen
+    assert "AIza" not in msg            # never echoes a secret
+
+
+def test_redact_masks_long_values():
+    body = json.dumps({"wasSuccessful": True,
+                        "result": {"secret": "AIzaSySUPERSECRETVALUE"}})
+    out = ks._redact(body)
+    assert "SUPERSECRET" not in out
+    assert "masked" in out
+
+
+def test_redact_keeps_short_fields_readable():
+    body = json.dumps({"wasSuccessful": False, "error": {"code": 5}})
+    out = ks._redact(body)
+    assert "wasSuccessful" in out
+    assert "code" in out
+
+
 def test_load_api_key_exports_to_env(monkeypatch):
-    body = json.dumps({"wasSuccessful": True, "result": {"value": "abc"}})
+    body = json.dumps({"wasSuccessful": True, "result": {"secret": "abc"}})
     _install(monkeypatch, {"https://www.kaggle.com": [(200, body)]})
     ks.load_api_key("GEMINI_API_KEY")
     assert ks.os.environ["GEMINI_API_KEY"] == "abc"
@@ -105,7 +144,7 @@ def test_401_is_auth_error(monkeypatch):
 
 def test_falls_back_to_injected_host_on_400(monkeypatch):
     """If www ever stops serving the endpoint, the injected host is tried."""
-    good = json.dumps({"wasSuccessful": True, "result": {"value": "v"}})
+    good = json.dumps({"wasSuccessful": True, "result": {"secret": "v"}})
     calls = _install(monkeypatch, {
         "https://www.kaggle.com": [(400, "")],
         "https://api.kaggle.com": [(200, good)],
