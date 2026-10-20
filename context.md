@@ -4,6 +4,16 @@
 
 ## Progress log
 
+- 2026-10-20: two P0 reliability bugs fixed + regression coverage.
+  (A) Partial rounds: `Orchestrator._round` no longer uses `ex.map` (which
+  discarded completed sibling results when one worker raised); it retains every
+  outcome, persists experiments + `round_status` before re-raising the terminal
+  error, and analyst failures no longer drop finished work. (B) Guard retries:
+  a changed replacement candidate now gets a fresh change identity with the
+  exact approved fingerprint; the rejected manifest is kept for audit, identical
+  retries reuse the manifest, and `Registry.update_change` persists corrections
+  so manifest/test report/promotion gate agree. Tests: **190 passed**;
+  `git diff --check` clean. Kaggle smoke/production still pending.
 - 2026-10-16: Phase 1-2 COMPLETE (calibration fixed + verified on Kaggle T4 x2).
   - Root causes of "calibration produced no valid runs" (all confirmed):
     (A) runner's stripped env dropped `LD_LIBRARY_PATH` -> CUDA invisible in

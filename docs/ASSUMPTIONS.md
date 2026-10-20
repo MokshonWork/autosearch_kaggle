@@ -24,6 +24,18 @@
 - Blockers from Section 19 were not answered → defaults used: Gemini free
   tier, N=40 experiments, wall-clock cap 9h.
 
+- Partial-round persistence (2026-10-20): a terminal worker error must not
+  discard successful sibling work. Completed outcomes are recorded first; the
+  pending terminal exception is re-raised afterwards and the existing graceful
+  stop reason (`BudgetExhausted`/`LLMError`) is preserved. `state.round_status`
+  distinguishes `completed` from `partial`/`failed`.
+- Guard-retry identity (2026-10-20): a changed replacement candidate gets a new
+  `ChangeRecord` id; the rejected candidate's manifest is kept with status
+  `guard_reject` (never rewritten). Identical content keeps one identity.
+  `Registry.record_change` remains insert-only; `Registry.update_change` is the
+  explicit API for correcting a candidate fingerprint when crash fixes change
+  the exact tested content.
+
 ## Known risks (kept current)
 
 - fp16 + GradScaler numerics for Muon on T4: UNVERIFIED (no GPU here).

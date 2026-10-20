@@ -153,6 +153,7 @@ class Orchestrator:
             "baseline_bpb": None, "epsilon": None, "calibration_values": [],
             "no_improve_streak": 0, "combine_queue": [],
             "started_at": time.time(), "stopped_reason": None,
+            "round_status": "pending",
         }
 
     def save_state(self, reason: str | None = None) -> None:
@@ -236,6 +237,7 @@ class Orchestrator:
         with self._lock:
             rnd = self.state["round"]
             best_commit = self.state["best_commit"]
+            self.state["round_status"] = "pending"
         self.log(f"[round {rnd}] start best={self.state['best_val_bpb']}")
         past = self.store.read_experiments()
 
@@ -259,13 +261,43 @@ class Orchestrator:
             task.payload["slot"] = slot
             tasks.append((task, hyp, preset))
 
+        # Submit explicitly instead of ex.map(): ex.map() propagates the first
+        # worker exception (BudgetExhausted/LLMError) while iterating and
+        # discards sibling results that already completed. Keep every result
+        # and re-raise only after the successful work is persisted.
+        futures = []
         with ThreadPoolExecutor(max_workers=len(tasks) or 1) as ex:
-            outcomes = list(ex.map(lambda t: self._worker_task(*t), tasks))
+            futures = [ex.submit(self._worker_task, *t) for t in tasks]
+        outcomes: list[WorkerOutcome] = []
+        terminal_error: Exception | None = None
+        for fut in futures:
+            try:
+                outcomes.append(fut.result())
+            except Exception as e:
+                if terminal_error is None:
+                    terminal_error = e
+                self.log(f"[round {rnd}] worker failed: "
+                         f"{type(e).__name__}: {e}")
 
-        self._analyze_decide_log(outcomes)
-        with self._lock:
-            self.state["round"] = rnd + 1
-        self.save_state()
+        analysis_error: Exception | None = None
+        try:
+            if outcomes:
+                self._analyze_decide_log(outcomes)
+        except Exception as e:
+            analysis_error = e
+        finally:
+            with self._lock:
+                self.state["round"] = rnd + 1
+                self.state["round_status"] = (
+                    "failed" if terminal_error and not outcomes else
+                    "partial" if terminal_error or analysis_error else
+                    "completed")
+            self.save_state()
+
+        if terminal_error is not None:
+            raise terminal_error
+        if analysis_error is not None:
+            raise analysis_error
 
     def _worker_task(self, task, hypothesis, preset_patch) -> WorkerOutcome:
         """Claim the task, run the branch on its slot's device, complete it."""
@@ -419,26 +451,42 @@ class Orchestrator:
                                    status="guard_reject",
                                    stdout_tail=reasons[:2000])
             return out
+        # The approved candidate may be the coder's RETRY, not the first
+        # patch the manifest was recorded for. Keep the rejected candidate's
+        # record as audit history and give a changed replacement a fresh
+        # identity whose fingerprint matches the exact approved content.
+        approved_revision = content_fingerprint(patched)
+        if approved_revision != manifest.candidate_revision:
+            self.registry.set_change_status(manifest.id, "guard_reject")
+            manifest = self._record_manifest(
+                hypothesis, patch, src, base_commit, agent_id="coder",
+                patched_src=patched)
+            out.change_id = manifest.id
+            out.candidate_revision = manifest.candidate_revision
         self.registry.set_change_status(manifest.id, "guard_ok")
         return self._run_with_fixes(out, slot, device, wt, src, patched,
                                     manifest)
 
     def _record_manifest(self, hypothesis, patch, src, base_commit,
-                         agent_id: str) -> ChangeRecord:
+                         agent_id: str,
+                         patched_src: str | None = None) -> ChangeRecord:
         """Build + persist the change manifest (Ch.4.3) for a candidate patch.
 
         The candidate fingerprint is the sha256 of the PATCHED train.py, so a
         later worktree mutation is detectable at promotion time (Ch.5).
+        patched_src is used when the caller already holds the exact approved
+        content (guard retry); otherwise the patch is applied here.
         """
-        try:
-            patched = patching.apply_edits(src, patch.edits,
-                                           self.cfg.guard.max_edits)
-        except patching.PatchError:
-            patched = src  # fingerprint of unpatched source; guard will fail
+        if patched_src is None:
+            try:
+                patched_src = patching.apply_edits(
+                    src, patch.edits, self.cfg.guard.max_edits)
+            except patching.PatchError:
+                patched_src = src  # unpatched: guard will reject it
         manifest = ChangeRecord(
             id=new_id("CHANGE"), task_id="", experiment_id=hypothesis.id,
             agent_id=agent_id, base_revision=base_commit,
-            candidate_revision=content_fingerprint(patched),
+            candidate_revision=content_fingerprint(patched_src),
             changed_files=["train.py"], objective=hypothesis.change_summary,
             rationale=hypothesis.rationale,
             expected_behavior=hypothesis.expected_effect,
@@ -456,7 +504,8 @@ class Orchestrator:
         out.patched_src = patched
         out.diff = patching.unified_diff(src, patched)
         if manifest is not None and not manifest.candidate_revision:
-            manifest.candidate_revision = content_fingerprint(patched)
+            manifest = self.registry.update_change(
+                manifest.id, candidate_revision=content_fingerprint(patched))
 
         def full_run() -> RunResult:
             return self.runner_fn(wt, device, out.hypothesis.id,
@@ -501,13 +550,18 @@ class Orchestrator:
         out.result = result
         self.hash_registry.verify()  # G1 after every run
         # Ch.5: bind the test report to the EXACT revision tested. If a crash
-        # fix rewrote the file, the fingerprint follows the final content.
+        # fix rewrote the file, the fingerprint follows the final content and
+        # the persisted manifest is corrected too (not just the in-memory
+        # copy) so the promotion gate compares like with like.
         if manifest is not None and out.patched_src:
-            manifest.candidate_revision = content_fingerprint(out.patched_src)
+            tested_revision = content_fingerprint(out.patched_src)
+            if tested_revision != manifest.candidate_revision:
+                manifest = self.registry.update_change(
+                    manifest.id, candidate_revision=tested_revision)
             self.registry.record_test(
                 TestReport(
                     id=new_id("TEST"), change_id=manifest.id,
-                    candidate_revision=manifest.candidate_revision,
+                    candidate_revision=tested_revision,
                     base_revision=manifest.base_revision,
                     commands=["preflight(train.py)", "full(train.py)"],
                     exit_codes=[],
@@ -517,6 +571,8 @@ class Orchestrator:
                              "steps": result.steps},
                     artifacts=[f"work/gpu{slot}/train.py"]))
             self.registry.set_change_status(manifest.id, "tested")
+            out.change_id = manifest.id
+            out.candidate_revision = tested_revision
             out.test_id = self.registry.tests_for_change(manifest.id)[-1].id
         return out
 
@@ -616,13 +672,22 @@ class Orchestrator:
                                    self.cfg.decision.plausibility_floor_factor)
         decisions = {}
         improved: list[WorkerOutcome] = []
+        analyst_error: Exception | None = None
         for out in outcomes:
             if out.result is None:
                 continue
-            if self.analyst is not None:
-                note, _ = self.analyst.analyze(out.hypothesis, out.diff,
-                                               out.result, best, eps)
-                out.analyst_note = note
+            # A terminal analyst failure must not drop already-finished
+            # experiments. Keep the deterministic decision + record, then
+            # re-raise after every outcome has been persisted.
+            if self.analyst is not None and analyst_error is None:
+                try:
+                    note, _ = self.analyst.analyze(
+                        out.hypothesis, out.diff, out.result, best, eps)
+                    out.analyst_note = note
+                except Exception as e:
+                    analyst_error = e
+                    self.log(f"  [{out.hypothesis.id}] analyst failed: "
+                             f"{type(e).__name__}: {e}")
             dec = decide(out.result, best, eps, floor,
                          self.cfg.decision.sanity_ceiling,
                          self.cfg.decision.confirm_marginal_wins)
@@ -723,6 +788,8 @@ class Orchestrator:
                      f"-> {dec.action} ({dec.reason_code})")
         self.state["no_improve_streak"] = 0 if kept else (
             self.state["no_improve_streak"] + 1)
+        if analyst_error is not None:
+            raise analyst_error
 
 
 def main(argv: list[str] | None = None) -> int:

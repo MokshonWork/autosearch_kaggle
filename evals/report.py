@@ -1,8 +1,8 @@
 """Generate results/ab_report.md + plots from finished A/B runs (Section 9.1).
 
 Input layout: results/<arm>/run<i>/memory/{experiments.jsonl,state.json}
-Numbers come from logs via code; the Librarian only writes narrative (added
-separately by run_ab.py at the end of a run, if an LLM is available).
+Numbers come from logs via code. The optional Librarian narrative appendix is
+NOT wired here or in run_ab.py (see docs/READINESS.md "Librarian A/B status").
 """
 from __future__ import annotations
 

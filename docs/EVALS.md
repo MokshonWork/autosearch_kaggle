@@ -17,7 +17,7 @@
 | E11 | Kill after round 1, resume → continues, unique ids, append-only log | pass | ✅ |
 | E12 | Stop rules: max_rounds, STOP file, token budget, no-improvement streak, wall-clock cap | all trigger clean stop with saved state | ✅ 5/5 |
 
-Latest run: **100 passed** (see context.md progress log).
+Latest run: **190 passed** (2026-10-20; see context.md progress log).
 
 ## On Kaggle (GPU) — notebook cells in `notebook/kaggle_run.ipynb`
 

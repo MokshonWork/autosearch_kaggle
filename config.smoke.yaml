@@ -20,8 +20,12 @@ budget:
   max_rounds: 1
   max_experiments: 2
   max_api_calls_total: 30
-  max_tokens_total: 50000
-  max_calls_per_round: 12
+  # 2026-10-20: 50000 exhausted at 10 calls in a real smoke run (63939 tokens)
+  # before any experiment was written. ~6.4k tokens/call on full train.py
+  # prompts; 2 experiments need ~10-14 calls. Bounded, still far below the
+  # production 800k cap.
+  max_tokens_total: 250000
+  max_calls_per_round: 24
   wall_clock_cap_hours: 0.5
   session_margin_minutes: 5
   no_improvement_patience: 1

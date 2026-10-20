@@ -244,6 +244,25 @@ class Registry:
             self._save("changes", self._changes)
         return rec
 
+    def update_change(self, change_id: str, *,
+                      candidate_revision: str | None = None,
+                      status: str | None = None) -> ChangeRecord:
+        """Explicitly correct mutable fields of an existing manifest.
+
+        record_change is insert-only (idempotent redelivery); use this when
+        the tested/approved content differs from the recorded fingerprint.
+        Only the named fields are touched; audit fields are preserved.
+        """
+        with self._lock:
+            rec = self.get_change(change_id)
+            if candidate_revision is not None:
+                rec.candidate_revision = candidate_revision
+            if status is not None:
+                rec.status = status
+            self._changes[change_id] = rec.model_dump()
+            self._save("changes", self._changes)
+        return rec
+
     # -- test reports ------------------------------------------------------
     def record_test(self, report: TestReport) -> TestReport:
         with self._lock:

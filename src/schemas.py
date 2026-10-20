@@ -19,6 +19,11 @@ Category = Literal[
     "optimizer", "lr_schedule", "architecture", "regularization",
     "batch_and_sequence", "initialization", "precision_and_throughput",
 ]
+# Round lifecycle: a round is "pending" before it starts, "completed" when
+# every planned experiment was persisted, "partial" when some results were
+# persisted but the round was cut short by a terminal error (budget/API
+# failure), and "failed" when it produced nothing at all.
+RoundStatus = Literal["pending", "completed", "partial", "failed"]
 
 
 class Hypothesis(BaseModel):
