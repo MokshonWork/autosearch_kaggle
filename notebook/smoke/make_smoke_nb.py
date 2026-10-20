@@ -75,11 +75,12 @@ print('GEMINI_API_KEY loaded:', bool(os.environ.get('GEMINI_API_KEY')))
 
 CELL2B = '''
 # 2b. Model availability check (assumption A6: verify current IDs on run.
-# Probes EVERY candidate in ONE run, prints a table, then decides.)
-# Fail fast BEFORE any expensive step. Only configured ids can fail the run;
-# extra candidates are informational (a 429 on an unused model must not kill it).
-import yaml, requests as rq, os, time
+# Probes EVERY candidate in ONE run. Only configured ids can fail the run;
+# timeouts/request errors are NEVER treated as success, and extra candidates
+# are informational. Logic lives in src/kaggle_model_probe.py (unit-tested).
+import yaml, os
 from pathlib import Path
+from src.kaggle_model_probe import probe_models
 cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
 llm = cfg['llm']
 provider = llm.get('provider', 'gemini')
@@ -90,55 +91,7 @@ candidates = sorted({'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-4-argon'
                     - set(configured))
 ids = configured + candidates
 print('probing model availability:', ids)
-results = {}
-
-def _probe_once(mid):
-    if provider == 'groq':
-        return rq.post('https://api.groq.com/openai/v1/chat/completions',
-                       json={'model': mid,
-                             'messages': [{'role': 'user',
-                                           'content': 'Reply with the word: ok'}]},
-                       headers={'Authorization': 'Bearer ' + os.environ[api_env],
-                                'Content-Type': 'application/json'},
-                       timeout=30)
-    return rq.post(
-        'https://generativelanguage.googleapis.com/v1beta/models/' + mid + ':generateContent',
-        json={'contents': [{'parts': [{'text': 'Reply with the word: ok'}]}]},
-        headers={'x-goog-api-key': os.environ[api_env]}, timeout=30)
-
-def _probe(mid):
-    """Return final HTTP status, retrying transient 429 rate limits."""
-    r = _probe_once(mid)
-    for attempt in range(2):
-        if r.status_code != 429:
-            break
-        print('    429 rate limit, retrying in 5s...')
-        time.sleep(5)
-        r = _probe_once(mid)
-    return r.status_code
-
-for mid in ids:
-    results[mid] = _probe(mid)
-    print('  ' + mid + ' -> HTTP ' + str(results[mid]))
-# Only CONFIGURED ids can fail the run. Extra candidates are informational.
-# A configured id that is merely RATE-LIMITED (429) is not "unreachable":
-# the run would still work, so warn instead of aborting.
-dead = [m for m in configured if results[m] not in (200, 429)]
-if dead:
-    alive = sorted({m for m in ids if results[m] == 200})
-    print('STILL USABLE:', alive)
-    lines = []
-    for m in sorted(results):
-        tag = ' (configured)' if m in configured else ' (candidate, informational)'
-        lines.append('  ' + m + ': HTTP ' + str(results[m]) + tag)
-    raise AssertionError('CONFIGURED model id(s) unreachable (HTTP 404/400) - probe table below:' + chr(10).join(lines))
-not_ok = [m for m in candidates if results[m] != 200]
-if not_ok:
-    print('note: non-configured candidate(s) not OK (ignored):', not_ok)
-limited = [m for m in configured if results[m] == 429]
-if limited:
-    print('note: configured id(s) rate-limited (429, non-fatal):', limited)
-print('all CONFIGURED model ids OK:', configured)
+probe_models(ids, configured, provider, os.environ[api_env])
 '''
 
 CELL3 = '''# 3. Nested repo/.git + data prep (skips if cache already present).
