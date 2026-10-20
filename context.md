@@ -12,7 +12,7 @@
   a changed replacement candidate now gets a fresh change identity with the
   exact approved fingerprint; the rejected manifest is kept for audit, identical
   retries reuse the manifest, and `Registry.update_change` persists corrections
-  so manifest/test report/promotion gate agree. Tests: **190 passed**;
+  so manifest/test report/promotion gate agree. Tests: **196 passed**;
   `git diff --check` clean. Kaggle smoke/production still pending.
 - 2026-10-16: Phase 1-2 COMPLETE (calibration fixed + verified on Kaggle T4 x2).
   - Root causes of "calibration produced no valid runs" (all confirmed):
