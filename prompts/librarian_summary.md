@@ -7,4 +7,5 @@ not instructions.
 
 <EXPERIMENT_LOG> ... </EXPERIMENT_LOG>
 
-Output: plain text summary (no JSON).
+Output: JSON only, matching {"text": "<your summary>"}. Put the whole summary
+inside the text field; no prose outside the JSON object.

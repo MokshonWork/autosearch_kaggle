@@ -66,6 +66,8 @@ class Librarian:
 
     # -- summary / lessons / report --------------------------------------------
     def summarize(self, experiments: list[dict]) -> str:
+        if not experiments:
+            return deterministic_summary(experiments)
         prompt = render(self.summary_t, {
             "EXPERIMENT_LOG": _compact_log(experiments)})
         out, err = self.client.generate_json("librarian", prompt, _TextOut)

@@ -5,7 +5,7 @@ text-similarity stage (difflib) with the LLM judge disabled (hermetic test).
 """
 from pathlib import Path
 
-from src.agents.librarian import Librarian
+from src.agents.librarian import Librarian, _TextOut, deterministic_summary
 from tests.conftest import make_hypothesis
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
@@ -70,3 +70,42 @@ def test_e6_false_positive_rate(project):
         lib.is_duplicate(make_hypothesis(category=c, summary=s), PAST)[0]
         for c, s in DISTINCT)
     assert fps / len(DISTINCT) <= 0.10
+
+
+def test_empty_history_summary_skips_llm(project):
+    """Round one has no history: use the deterministic summary, spend no call."""
+    _, client, _ = project
+    lib = _librarian(project)
+    assert lib.summarize([]) == deterministic_summary([])
+    assert client.call_counts == {}
+
+
+def test_nonempty_history_still_uses_llm_summary(project):
+    _, client, _ = project
+    seen = {}
+
+    def handler(agent, prompt, n):
+        seen["prompt"] = prompt
+        return {"text": "llm summary"}
+
+    client.handlers["librarian"] = handler
+    lib = _librarian(project)
+    assert lib.summarize(PAST) == "llm summary"
+    assert client.call_counts["librarian"] == 1
+    assert "H-0001" in seen["prompt"]
+
+
+def test_summary_prompt_matches_text_schema(project):
+    _, client, _ = project
+    seen = {}
+
+    def handler(agent, prompt, n):
+        seen["prompt"] = prompt
+        return {"text": "schema-compatible"}
+
+    client.handlers["librarian"] = handler
+    lib = _librarian(project)
+    assert lib.summarize(PAST) == "schema-compatible"
+    assert "text" in _TextOut.model_fields
+    assert '"text"' in seen["prompt"]
+    assert "JSON" in seen["prompt"]

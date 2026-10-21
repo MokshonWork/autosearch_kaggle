@@ -12,6 +12,7 @@ session mid-round. Fixes under test:
 """
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,3 +315,66 @@ def test_shipped_config_disables_unverified_fallback(gemini):
     with pytest.raises(LLMError):
         client._raw_generate("librarian", "p")
     assert len(fake.calls) == 1  # no silent switch to an unconfigured model
+
+
+def test_shipped_smoke_daily_quota_makes_one_post(monkeypatch):
+    """Smoke config has no fallback: a recognized daily quota is one POST."""
+    root = Path(__file__).resolve().parents[1]
+    cfg = load_config(root / "config.smoke.yaml")
+    monkeypatch.setenv(cfg.llm.api_key_env, API_KEY)
+    slept: list[float] = []
+    monkeypatch.setattr(client_mod.time, "sleep", slept.append)
+    client = GeminiClient(
+        cfg.llm,
+        BudgetTracker(cfg.budget.max_api_calls_total,
+                      cfg.budget.max_tokens_total,
+                      cfg.budget.max_calls_per_round))
+    quota = {"error": {"details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        "violations": [{"quotaId":
+                        "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}
+    fake = _use(client, [FakeResp(429, payload=quota)])
+
+    with pytest.raises(LLMError) as exc:
+        client._raw_generate("librarian", "p")
+
+    assert "HTTP 429 (quota exhausted)" in str(exc.value)
+    assert len(fake.calls) == 1
+    assert client.budget.requests_total == 1
+    assert client.budget.generations_total == 0
+    assert slept == []
+
+
+def test_first_quota_failure_persists_zero_experiments_and_one_call(project):
+    """The first logical call reserves one POST, then the run stops failed."""
+    from evals.metrics import run_status
+    from src.orchestrator import Orchestrator
+
+    cfg, _, _ = project
+    budget = BudgetTracker(cfg.budget.max_api_calls_total,
+                           cfg.budget.max_tokens_total,
+                           cfg.budget.max_calls_per_round)
+
+    class QuotaClient:
+        def __init__(self, tracker):
+            self.budget = tracker
+
+        def generate_json(self, agent, prompt, schema):
+            self.budget.reserve_call()
+            raise LLMError("gemini call failed: HTTP 429 (quota exhausted)")
+
+    orch = Orchestrator(cfg, QuotaClient(budget), runner_fn=fixed_runner(),
+                        log=lambda s: None)
+    state = orch.run()
+
+    assert state["stopped_reason"] == "LLMError"
+    assert state["experiments_done"] == 0
+    assert state["api_calls"] == 1
+    assert run_status(state) == "failed"
+
+    mem = cfg.root / "memory"
+    persisted = json.loads((mem / "state.json").read_text())
+    assert persisted["stopped_reason"] == "LLMError"
+    assert persisted["experiments_done"] == 0
+    assert persisted["api_calls"] == 1
+    assert not (mem / "experiments.jsonl").exists()
