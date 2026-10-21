@@ -4,7 +4,7 @@
 
 - Calibration: WORKS (verified on Kaggle T4 x2: values [1.926492, 1.927058],
   epsilon 0.002, GPU0-GPU1 diff 0.000566).
-- Tests: 226 pass (includes reliability, model-probe, HTTP-attempt cap/concurrency, budget-resume, retry/quota, crash-fix, report comparability, notebook-consistency regressions; 2026-10-21). Dry-run A/B green.
+- Tests: 229 pass (includes reliability, model-probe, HTTP-attempt cap/concurrency, budget-resume, retry/quota, crash-fix, report comparability, notebook-consistency regressions; 2026-10-21). Dry-run A/B green.
 - Kaggle CLI: auth, push (triggers run), status, logs, output — all verified.
 - Kernels reproducible: diag / smoke / run / secret_probe bundles in
   `notebook/` with pinned `NvidiaTeslaT4` + docker image.

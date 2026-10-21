@@ -7,6 +7,8 @@ in main()/run_arm caller and pass it explicitly.
 
 All tests use temp git repos + the mock training fixtures. No GPU/API/net.
 """
+import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -69,7 +71,6 @@ def test_A_both_arms_share_pristine_source(tmp_path):
         log = _git(out / arm / "run0" / "repo", "rev-list", "HEAD")
         assert pristine in log.splitlines(), \
             f"{arm} run0 not descended from pristine {pristine[:8]}"
-        import json
         meta = json.loads((out / arm / "run0" / "memory" / "source.json"
                            ).read_text())
         assert meta["start_commit"] == pristine
@@ -176,3 +177,69 @@ def test_G_source_required_kwarg(tmp_path):
     cfg = _ab_cfg(tmp_path, source)
     with pytest.raises(TypeError):
         run_arm(cfg, "multi_agent", 0, tmp_path / "out")  # type: ignore
+
+
+# Test H — stale state.json cannot masquerade as a resumed fresh run ------------
+def test_H_stale_state_is_removed(tmp_path):
+    source = create_mock_git_repo(tmp_path / "source")
+    out = tmp_path / "out"
+    cfg = _ab_cfg(tmp_path, source)
+    src, commit = _capture(cfg)
+    mem = out / "multi_agent" / "run0" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "state.json").write_text(json.dumps({
+        "round": 999, "next_hyp_id": 999, "experiments_done": 40,
+        "no_improve_streak": 5, "best_val_bpb": 42.0,
+        "best_commit": commit, "baseline_bpb": 42.0,
+        "epsilon": 123.0, "started_at": 1.0,
+    }))
+
+    state = run_arm(cfg, "multi_agent", 0, out,
+                    source_repo=src, start_commit=commit)
+    assert state["best_val_bpb"] != 42.0
+    assert state["epsilon"] != 123.0
+    assert state["round"] == 1
+    assert state["next_hyp_id"] < 999
+
+
+# Test I — stale worker worktrees are removed before calibration/workers -------
+def test_I_stale_worker_worktrees_are_removed(tmp_path):
+    source = create_mock_git_repo(tmp_path / "source")
+    out = tmp_path / "out"
+    cfg = _ab_cfg(tmp_path, source)
+    src, commit = _capture(cfg)
+    run_arm(cfg, "multi_agent", 0, out,
+            source_repo=src, start_commit=commit)
+    run_dir = out / "multi_agent" / "run0"
+    assert (run_dir / "work" / "gpu0" / ".git").exists()
+
+    # Simulate the old failure: repo+state gone, stale worktrees left behind.
+    shutil.rmtree(run_dir / "repo")
+    shutil.rmtree(run_dir / "memory")
+    state = run_arm(cfg, "multi_agent", 0, out,
+                    source_repo=src, start_commit=commit)
+    assert state["round"] == 1
+    assert (run_dir / "work" / "gpu0" / ".git").exists()
+    assert _git(run_dir / "repo", "rev-parse", "HEAD") == commit
+
+
+# Test J — repeated arm/repeat runs are genuinely fresh ------------------------
+def test_J_repeated_run_arm_is_fresh(tmp_path):
+    source = create_mock_git_repo(tmp_path / "source")
+    out = tmp_path / "out"
+    cfg = _ab_cfg(tmp_path, source)
+    src, commit = _capture(cfg)
+    run_arm(cfg, "multi_agent", 0, out,
+            source_repo=src, start_commit=commit)
+    run_dir = out / "multi_agent" / "run0"
+    (run_dir / "stale_marker").write_text("old")
+    (run_dir / "work" / "stale_marker").write_text("old")
+    (run_dir / "memory" / "stale_marker").write_text("old")
+
+    state = run_arm(cfg, "multi_agent", 0, out,
+                    source_repo=src, start_commit=commit)
+    assert state["round"] == 1
+    assert not (run_dir / "stale_marker").exists()
+    assert not (run_dir / "work" / "stale_marker").exists()
+    assert not (run_dir / "memory" / "stale_marker").exists()
+    assert _git(run_dir / "repo", "rev-parse", "HEAD") == commit

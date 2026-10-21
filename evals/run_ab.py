@@ -26,6 +26,22 @@ from src.llm.client import BudgetTracker, MockLLMClient, make_client  # noqa: E4
 from src.orchestrator import Orchestrator  # noqa: E402
 
 
+def _reset_run_dir(run_dir: Path, out_root: Path) -> None:
+    """Remove only this run's output; never a parent, symlink, or file."""
+    raw = Path(run_dir)
+    if raw.is_symlink():
+        raise RuntimeError(f"refusing to reset symlinked run dir: {raw}")
+    target = raw.resolve()
+    root = Path(out_root).resolve()
+    if target == root or root not in target.parents:
+        raise RuntimeError(f"refusing to reset run dir outside out_root: {raw}")
+    if target.exists():
+        if not target.is_dir():
+            raise RuntimeError(f"refusing to reset non-directory: {raw}")
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+
+
 def _fresh_clone(repo: Path, commit: str, dest: Path) -> None:
     if dest.exists():
         shutil.rmtree(dest)
@@ -82,6 +98,9 @@ def run_arm(cfg, arm: str, repeat: int, out_root: Path, *,
     """
     cfg.mode.arm = arm
     run_dir = out_root / arm / f"run{repeat}"
+    # A previous attempt may have left repo/.git/worktrees metadata, stale
+    # state.json, or worker dirs behind. Reset this run's own output first.
+    _reset_run_dir(run_dir, out_root)
     cfg.paths.memory_dir = str(run_dir / "memory")
     cfg.paths.work_dir = str(run_dir / "work")
     cfg.paths.stop_file = str(run_dir / "STOP")

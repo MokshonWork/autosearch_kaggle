@@ -13,7 +13,7 @@
   unverified fallback model (`fallback_model: ""`). A/B reports reject missing
   provenance, incompatible start commits, and material config differences;
   malformed/non-object eval artifacts no longer crash reporting. Tests:
-  **226 passed**.
+  **229 passed**.
 - 2026-10-21: core completion sprint. Budget counters now restore from
   `state.json` on resume (cumulative `max_api_calls_total`/`max_tokens_total`;
   legacy/malformed fields ignored). LLM clients respect bounded `Retry-After`,
