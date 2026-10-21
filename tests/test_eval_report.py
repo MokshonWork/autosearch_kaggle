@@ -179,3 +179,24 @@ def test_generate_report_rejects_mixed_synthetic_and_real_modes(
      ).write_text(json.dumps(synthetic))
     text = report.generate_report(root)
     assert "NOT COMPARABLE" in text and "execution mode" in text
+
+
+def test_generate_report_marks_synthetic_failed_run_incomplete(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(report, "_plot", lambda *a, **k: None)
+    root = tmp_path / "results"
+    source = {"start_commit": "abc123", "synthetic": True,
+              "config": _config(mode={"dry_run": True})}
+    failed = {"experiments_done": 0, "stopped_reason": "LLMError",
+              "round_status": "failed", "baseline_bpb": None,
+              "best_val_bpb": None}
+    for arm in ("multi_agent", "baseline_single"):
+        for i in (0, 1):
+            _write_run(root, arm, i, [], failed, source)
+
+    text = report.generate_report(root)
+    assert "SYNTHETIC" in text
+    assert "not evidence of real model improvement" in text
+    assert "run0:failed" in text and "run1:failed" in text
+    assert "**Verdict:** INCOMPLETE" in text
+    assert "MULTI-AGENT BETTER" not in text

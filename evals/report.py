@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from evals.metrics import load_run, run_metrics  # noqa: E402
+from evals.metrics import load_run, run_metrics, run_status  # noqa: E402
 
 METRIC_KEYS = ["n_experiments", "best_val_bpb", "improvement",
                "experiments_to_first_improvement", "keep_rate",
@@ -52,15 +52,20 @@ def generate_report(results_dir: Path) -> str:
     results_dir = Path(results_dir)
     arms: dict[str, list[dict]] = {}
     sources: dict[str, list[dict]] = {}
+    statuses: dict[str, list[str]] = {}
     for arm_dir in sorted(results_dir.iterdir()):
         if not arm_dir.is_dir():
             continue
         run_dirs = [d for d in sorted(arm_dir.iterdir())
                     if (d / "memory").exists()]
-        runs = [run_metrics(load_run(d / "memory")) for d in run_dirs]
+        loaded = [load_run(d / "memory") for d in run_dirs]
+        runs = [run_metrics(run) for run in loaded]
         if runs:
             arms[arm_dir.name] = runs
             sources[arm_dir.name] = [_source(d) for d in run_dirs]
+            statuses[arm_dir.name] = [
+                run_status(run["state"], m["n_experiments"])
+                for run, m in zip(loaded, runs)]
     if not arms:
         return "no runs found"
 
@@ -70,6 +75,23 @@ def generate_report(results_dir: Path) -> str:
     for key in METRIC_KEYS:
         lines.append(f"| {key} | " + " | ".join(
             _mean_std([m[key] for m in runs]) for runs in arms.values()) + " |")
+    lines.append("")
+    all_sources = [s for group in sources.values() for s in group]
+    modes = []
+    for source in all_sources:
+        cfg = source.get("config")
+        modes.append(_is_synthetic(source, cfg if isinstance(cfg, dict)
+                                   else {}))
+    if modes and all(modes):
+        lines.append("**Execution mode:** SYNTHETIC — mock LLM and mock "
+                     "training; scores are not evidence of real model "
+                     "improvement.")
+    elif any(modes):
+        lines.append("**Execution mode:** MIXED synthetic/real runs.")
+    lines.append("**Run status:** " + "; ".join(
+        f"{arm} " + ", ".join(f"run{i}:{status}"
+                              for i, status in enumerate(group))
+        for arm, group in statuses.items()))
     lines.append("")
     if "multi_agent" in arms and "baseline_single" in arms:
         ma, b1 = arms["multi_agent"], arms["baseline_single"]
@@ -90,6 +112,10 @@ def generate_report(results_dir: Path) -> str:
             lines.append("**Verdict:** NOT COMPARABLE "
                          "(material config or execution mode differs "
                          "between runs)")
+        elif any(status != "completed"
+                 for group in statuses.values() for status in group):
+            lines.append("**Verdict:** INCOMPLETE "
+                         "(failed/partial runs are not evidence)")
         else:
             lines.append("**Verdict:** " + verdict(ma, b1))
     out = results_dir / "ab_report.md"

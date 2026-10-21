@@ -37,6 +37,16 @@ def test_runner_timeout():
     assert r.status == "timeout"
 
 
+def test_runner_preserves_full_failure_log(tmp_path):
+    log = tmp_path / "train.log"
+    r = run_training(FIXTURE_REPO, gpu=0, hypothesis_id="H-0003",
+                     time_budget_s=5, startup_allowance_s=30,
+                     extra_env={"MOCK_TRAIN_BEHAVIOR": "crash"},
+                     log_path=log)
+    assert r.status == "crash"
+    assert "RuntimeError: simulated crash" in log.read_text()
+
+
 def test_runner_preflight():
     r = run_training(FIXTURE_REPO, gpu=1, hypothesis_id="H-0002",
                      time_budget_s=5, startup_allowance_s=30,

@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from evals.metrics import run_status  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.llm.client import BudgetTracker, MockLLMClient, make_client  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
@@ -160,15 +161,22 @@ def main() -> int:
     # cfg.paths.repo_dir afterwards (source-contamination fix).
     source_repo, start_commit = _resolve_source_repo(cfg)
     print(f"source: {source_repo} @ {start_commit[:12]}")
+    incomplete: list[str] = []
     for arm in args.arms.split(","):
         for r in range(args.repeats):
             print(f"=== arm={arm} repeat={r} ===")
             state = run_arm(cfg, arm, r, out_root,
                             source_repo=source_repo, start_commit=start_commit)
+            status = run_status(state)
             print(f"    best={state['best_val_bpb']} "
-                  f"stopped={state['stopped_reason']}")
+                  f"stopped={state['stopped_reason']} status={status}")
+            if status != "completed":
+                incomplete.append(f"{arm}/run{r}={status}")
     from evals.report import generate_report
     print(generate_report(out_root))
+    if incomplete:
+        print("A/B INCOMPLETE: " + ", ".join(incomplete), file=sys.stderr)
+        return 1
     return 0
 
 

@@ -26,12 +26,21 @@
 ## Replay mode (optional)
 
 ```
-python -m src.mock_repo /tmp/mock && \
-python -m src.orchestrator --config evals/fixtures/dry_config.yaml --dry-run
+python -m src.mock_repo evals/fixtures/mock_git_repo
+python -m evals.run_ab --config evals/fixtures/dry_config.yaml \
+    --repeats 1 --out /tmp/ab_out
 ```
 
-streams a full recorded-style dry run (mock LLM + mock runner) in seconds —
-safe fallback if Kaggle is down on demo day.
+Runs the full A/B harness with the mock LLM and mock training script in
+seconds, writes `/tmp/ab_out/ab_report.md`, and labels every result
+**SYNTHETIC** — safe fallback if Kaggle is down on demo day. The command exits
+nonzero if any run is failed, partial, or produced zero experiments.
+
+## Training-only smoke (no LLM)
+
+See `docs/REAL_SMOKE.md` for a one-cell Kaggle check that runs only
+`repo/train.py`, validates a finite `val_bpb`, and uses no secrets, agents, or
+A/B harness.
 
 ## If asked for a live GPU run
 

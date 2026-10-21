@@ -42,6 +42,7 @@ def run_training(
     diff_hash: str = "",
     preflight_steps: int = 0,
     extra_env: dict[str, str] | None = None,
+    log_path: Path | None = None,
 ) -> RunResult:
     """Run one experiment. Always returns a RunResult (failures are data)."""
     hard_timeout = time_budget_s + startup_allowance_s
@@ -70,6 +71,11 @@ def run_training(
         stderr = (e.stderr or "") if isinstance(e.stderr, str) else ""
         rc = -9
     wall = time.time() - t0
+
+    if log_path is not None:
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(stdout + "\n" + stderr)
 
     status = metrics_parser.classify_status(stdout, stderr, rc, timed_out)
     metrics = metrics_parser.parse_metrics(stdout)

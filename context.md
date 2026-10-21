@@ -4,6 +4,20 @@
 
 ## Progress log
 
+- 2026-10-21: LLM-free real-training smoke prepared. Added
+  `evals/real_smoke.py`: dependency/cache/CUDA preflight, copy of only
+  `train.py`+`prepare.py` into a temp dir, one bounded GPU run through the
+  existing runner, full log preservation, and finite-`val_bpb` validation.
+  Runner now optionally writes full stdout/stderr. No LLM, network, orchestrator,
+  or A/B path is used; no real training result is claimed. Local preflight fails
+  safely on missing torch/rustbpe/data/tokenizer. Tests: **250 passed**.
+- 2026-10-21: offline showcase + honest A/B status. Dry-run A/B now has
+  targeted coverage proving it constructs no Gemini/Groq client, needs no API
+  key, and makes no HTTP requests. Persisted runs are classified
+  `completed`/`partial`/`failed`; zero-experiment runs are never successful,
+  fatal `LLMError`/`BudgetExhausted` stops remain persisted, and `evals.run_ab`
+  exits nonzero for failed/partial runs. Reports label synthetic runs and
+  refuse a performance verdict for incomplete runs. Tests: **238 passed**.
 - 2026-10-21: budget/fallback corrections. `max_api_calls_total` and
   `max_calls_per_round` are now hard caps on outbound provider HTTP attempts,
   reserved atomically before every POST (retries, timeouts, failures, and

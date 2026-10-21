@@ -43,6 +43,28 @@ def load_run(run_dir: Path) -> dict:
             "load_errors": errors}
 
 
+_FATAL_REASONS = {"LLMError", "BudgetExhausted"}
+
+
+def run_status(state: dict, n_experiments: int | None = None) -> str:
+    """Classify a persisted run: completed, partial, or failed.
+
+    Zero persisted experiments can never count as a successful run. A fatal
+    LLM/budget stop after some experiments succeeded is partial: those
+    completed results stay valid, but the A/B run is not complete.
+    """
+    state = _dict(state)
+    done = state.get("experiments_done")
+    if not isinstance(done, int) or isinstance(done, bool):
+        done = n_experiments if isinstance(n_experiments, int) else 0
+    if done <= 0 or state.get("round_status") == "failed":
+        return "failed"
+    if (state.get("stopped_reason") in _FATAL_REASONS
+            or state.get("round_status") == "partial"):
+        return "partial"
+    return "completed"
+
+
 def run_metrics(run: dict) -> dict:
     """All 9.1 metrics for a single run."""
     exps = run.get("experiments") or []

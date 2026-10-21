@@ -29,7 +29,7 @@ the measured noise epsilon, and an honest verdict. **No results yet — see
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests -q          # 229 tests: guardrails E1-E12, units, integration
+python -m pytest tests -q          # 250 tests: guardrails E1-E12, units, integration
 python -m src.mock_repo /tmp/mock  # mock training repo (dry-run target)
 python -m evals.run_ab --config evals/fixtures/dry_config.yaml --repeats 1 \
     --out /tmp/ab_out              # full A/B harness with mock LLM + mock runner
@@ -60,10 +60,10 @@ autoresearch-team/
               kaggle_model_probe.py, kaggle_secret.py
   prompts/    one markdown file per agent (Section 7 of the spec)
   repo/       forked karpathy/autoresearch with the one-time T4 port
-  tests/      229 tests incl. evals E1-E12 (offline, mock-based)
-  evals/      run_ab.py, metrics.py, report.py, fixtures/
+  tests/      250 tests incl. evals E1-E12 (offline, mock-based)
+  evals/      run_ab.py, real_smoke.py, metrics.py, report.py, fixtures/
   docs/       ARCHITECTURE, ASSUMPTIONS, COMPUTE_BUDGET, GUARDRAILS, EVALS,
-              EXPLAINER (viva), DEMO
+              EXPLAINER (viva), DEMO, REAL_SMOKE
   results/    generated on Kaggle (ab_report.md, plots, logs)
 ```
 
