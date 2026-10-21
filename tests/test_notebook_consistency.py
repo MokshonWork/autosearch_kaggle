@@ -29,3 +29,24 @@ def test_probe_cell_uses_tested_module():
     source = "".join(probe["source"])
     assert "from src.kaggle_model_probe import probe_models" in source
     assert "_probe_once" not in source
+
+
+def test_probe_cell_is_disabled_by_default(monkeypatch, capsys):
+    nb = json.loads(NOTEBOOK.read_text())
+    probe = next(c for c in nb["cells"]
+                 if "model availability" in "".join(c["source"]))
+    source = "".join(probe["source"])
+
+    import src.kaggle_model_probe as probe_mod
+    calls = []
+    monkeypatch.setattr(probe_mod, "probe_models",
+                        lambda *a, **k: calls.append((a, k)))
+    monkeypatch.delenv("AUTOSEARCH_MODEL_PROBE", raising=False)
+    monkeypatch.chdir(ROOT)
+
+    exec(compile(source, str(NOTEBOOK) + ":cell2b", "exec"), {})
+
+    out = capsys.readouterr().out
+    assert calls == []
+    assert "Skipping optional model-availability probe" in out
+    assert "AUTOSEARCH_MODEL_PROBE=1" in out

@@ -42,13 +42,13 @@ def test_configured_and_candidate_http_200_are_success():
         ["gemini-3.6-flash"], "gemini", SECRET,
         post=_post(statuses={"gemini-3.6-flash": 200,
                              "gemini-flash-latest": 200}),
-        sleep=lambda _s: None, log=log)
+        log=log)
     assert results["gemini-3.6-flash"] == "HTTP 200"
     assert results["gemini-flash-latest"] == "HTTP 200"
     assert not any(SECRET in line for line in logs)
 
 
-def test_configured_429_is_non_fatal_with_bounded_retries():
+def test_configured_429_makes_one_post_and_is_not_usable():
     logs, log = _logs()
     calls = []
 
@@ -56,12 +56,16 @@ def test_configured_429_is_non_fatal_with_bounded_retries():
         calls.append(url)
         return _Resp(429)
 
-    results = probe_models(
-        ["gemini-3.6-flash"], ["gemini-3.6-flash"], "gemini", SECRET,
-        post=post, sleep=lambda _s: None, log=log)
-    assert results["gemini-3.6-flash"] == "HTTP 429"
-    assert len(calls) == 3  # initial + 2 bounded retries
-    assert any("rate-limited" in line for line in logs)
+    with pytest.raises(AssertionError) as err:
+        probe_models(
+            ["gemini-3.6-flash"], ["gemini-3.6-flash"], "gemini", SECRET,
+            post=post, log=log)
+    assert len(calls) == 1
+    msg = str(err.value)
+    assert "HTTP 429" in msg
+    assert "rate-limited/quota-exhausted" in msg
+    assert "STILL USABLE: none" in msg
+    assert any("not usable" in line for line in logs)
     assert not any(SECRET in line for line in logs)
 
 
@@ -71,7 +75,7 @@ def test_candidate_timeout_is_informational():
         ["gemini-3.6-flash", "gemini-4-argon"],
         ["gemini-3.6-flash"], "gemini", SECRET,
         post=_post(timeouts=["gemini-4-argon"]),
-        sleep=lambda _s: None, log=log)
+        log=log)
     assert results["gemini-3.6-flash"] == "HTTP 200"
     assert results["gemini-4-argon"] == TIMEOUT
     assert any("ignored" in line for line in logs)
@@ -84,7 +88,7 @@ def test_configured_timeout_fails_with_actionable_diagnostic():
         probe_models(
             ["gemini-3.6-flash"], ["gemini-3.6-flash"], "gemini", SECRET,
             post=_post(timeouts=["gemini-3.6-flash"]),
-            sleep=lambda _s: None, log=log)
+            log=log)
     msg = str(err.value)
     assert "gemini-3.6-flash" in msg
     assert TIMEOUT in msg
@@ -99,7 +103,7 @@ def test_candidate_request_error_is_informational():
         ["gemini-3.6-flash", "gemini-4-argon"],
         ["gemini-3.6-flash"], "gemini", SECRET,
         post=_post(errors=["gemini-4-argon"]),
-        sleep=lambda _s: None, log=log)
+        log=log)
     assert results["gemini-4-argon"] == REQUEST_ERROR
     assert not any(SECRET in line for line in logs)
 
@@ -110,6 +114,6 @@ def test_configured_bad_status_still_fails():
         probe_models(
             ["gemini-3.6-flash"], ["gemini-3.6-flash"], "gemini", SECRET,
             post=_post(statuses={"gemini-3.6-flash": 500}),
-            sleep=lambda _s: None, log=log)
+            log=log)
     assert "HTTP 500" in str(err.value)
     assert not any(SECRET in line for line in logs)

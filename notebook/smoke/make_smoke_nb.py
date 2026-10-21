@@ -74,24 +74,32 @@ print('GEMINI_API_KEY loaded:', bool(os.environ.get('GEMINI_API_KEY')))
 '''
 
 CELL2B = '''
-# 2b. Model availability check (assumption A6: verify current IDs on run.
-# Probes EVERY candidate in ONE run. Only configured ids can fail the run;
-# timeouts/request errors are NEVER treated as success, and extra candidates
-# are informational. Logic lives in src/kaggle_model_probe.py (unit-tested).
-import yaml, os
-from pathlib import Path
-from src.kaggle_model_probe import probe_models
-cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
-llm = cfg['llm']
-provider = llm.get('provider', 'gemini')
-api_env = llm.get('api_key_env', 'GEMINI_API_KEY')
-configured = sorted({v for v in llm.values()
-                     if isinstance(v, str) and v.startswith('gemini-')})
-candidates = sorted({'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-4-argon'}
-                    - set(configured))
-ids = configured + candidates
-print('probing model availability:', ids)
-probe_models(ids, configured, provider, os.environ[api_env])
+# 2b. OPTIONAL model availability diagnostic (assumption A6).
+# Disabled by default: a normal smoke run must not spend provider quota on
+# probes. Set AUTOSEARCH_MODEL_PROBE=1 to enable this diagnostic manually.
+# Probes EVERY candidate once. Only configured ids can fail; timeouts/request
+# errors are NEVER treated as success, and extra candidates are informational.
+# HTTP 429 means rate-limited/quota-exhausted, not proof the model is usable.
+# Logic lives in src/kaggle_model_probe.py (unit-tested).
+import os
+if os.environ.get('AUTOSEARCH_MODEL_PROBE') != '1':
+    print('Skipping optional model-availability probe (no network calls). '
+          'Set AUTOSEARCH_MODEL_PROBE=1 to enable this diagnostic manually.')
+else:
+    import yaml
+    from pathlib import Path
+    from src.kaggle_model_probe import probe_models
+    cfg = yaml.safe_load(Path('config.smoke.yaml').read_text())
+    llm = cfg['llm']
+    provider = llm.get('provider', 'gemini')
+    api_env = llm.get('api_key_env', 'GEMINI_API_KEY')
+    configured = sorted({v for v in llm.values()
+                         if isinstance(v, str) and v.startswith('gemini-')})
+    candidates = sorted({'gemini-3.8-flash', 'gemini-flash-latest',
+                         'gemini-4-argon'} - set(configured))
+    ids = configured + candidates
+    print('probing model availability:', ids)
+    probe_models(ids, configured, provider, os.environ[api_env])
 '''
 
 CELL3 = '''# 3. Nested repo/.git + data prep (skips if cache already present).
