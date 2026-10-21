@@ -89,6 +89,8 @@ class ChangeRecord(BaseModel):
 class TestReport(BaseModel):
     """What was tested, how, and what came out, bound to a revision (Ch.5)."""
 
+    __test__ = False  # not a pytest test class (silences collection warning)
+
     id: str
     task_id: str = ""
     change_id: str = ""

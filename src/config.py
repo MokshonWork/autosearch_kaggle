@@ -14,7 +14,7 @@ class LLMConfig(BaseModel):
     model_guard: str = "gemini-3.6-flash"
     model_analyst: str = "gemini-3.6-flash"
     model_librarian: str = "gemini-3.6-flash"
-    fallback_model: str = "gemini-3.8-flash"
+    fallback_model: str = ""  # unverified fallbacks stay disabled by default
     temperatures: dict[str, float] = Field(default_factory=dict)
     max_output_tokens: dict[str, int] = Field(default_factory=dict)
     timeout_s: int = 60

@@ -7,7 +7,7 @@
 | A3 | Kaggle session length / weekly GPU quota | **UNVERIFIED** | Kaggle docs at run time. Config uses `wall_clock_cap_hours: 9.0` + `session_margin_minutes: 45` as conservative defaults; do not hardcode. Verify: Kaggle → Docs → "GPUs" quota page before the long run. |
 | A4 | Kaggle Secrets readable in "Save & Run All" | **VERIFIED (host fix) / ATTACHMENT UNVERIFIED** | Notebook cell 2 reads the secret via `src/kaggle_secret.py` (NOT `kaggle_secrets.UserSecretsClient`) and prints only whether it succeeded. **Root cause found 2026-10-19:** Kaggle injects `KAGGLE_URL_BASE=https://api.kaggle.com`, but the UserSecretsService endpoint is served ONLY by `https://www.kaggle.com`; against the injected host every request returns HTTP 400 with an empty body, which `kaggle_web_client` flattens into a generic `ConnectionError` (previously misread as a "flaky backend"). `src/kaggle_secret.py` talks to the working host directly and distinguishes "not attached to this kernel" (server code 5) from real backend failures. Remaining manual step: attach `GEMINI_API_KEY` to the kernel in the Kaggle UI. |
 | A5 | LangGraph API for fan-out | **DEVIATION (sanctioned)** | We use the prompt's Phase 6 fallback: `ThreadPoolExecutor(max_workers=2)` around the two worker pipelines in `src/orchestrator.py`. Rationale: offline build, LangGraph API drift risk, simplicity rule. Behavior (parallel branches + join + shared state) is equivalent. |
-| A6 | Gemini model IDs / structured output / free-tier limits | **PARTIALLY VERIFIED** | REST `generateContent` with `responseMimeType: application/json` (documented API). Model IDs live in `config.yaml` (default `gemini-2.5-flash`, fallback `gemini-2.5-flash-lite`) — **verify current IDs and free-tier RPM/TPM against ai.google.dev docs on run day and edit config only.** |
+| A6 | Gemini model IDs / structured output / free-tier limits | **PARTIALLY VERIFIED** | REST `generateContent` with `responseMimeType: application/json` (documented API). Model IDs live in `config.yaml` (default `gemini-3.6-flash`). `fallback_model` is **disabled** (`""`) in both shipped configs because no distinct Gemini model has been verified available; a failed primary call is therefore terminal. **Verify current IDs and free-tier RPM/TPM against ai.google.dev docs on run day and edit config only.** |
 | A7 | Two concurrent training subprocesses don't distort each other | **UNVERIFIED until Kaggle** | `src/calibration.py` runs K runs on both GPUs CONCURRENTLY and reports per-GPU means + diff (notebook step "calibration"). If GPUs differ systematically, pin comparisons per GPU. |
 | A8 | Startup/compile time on T4; safe hard-kill timeout | **UNVERIFIED until Kaggle** | `startup_allowance_s: 420` in config is a placeholder GUESS. Measure in the Phase 1 notebook cell (startup time printed by train.py's own `total_seconds - training_seconds`) and update config. |
 
@@ -43,7 +43,9 @@
   mask branch is cold; agents that add "S" windows will exercise it — watch
   the first such run.
 - `torch.compile` off by default; enabling may be slow on T4 (A8).
-- Gemini free-tier rate limits may force `max_calls_per_round` down; backoff
-  + fallback model are implemented but untested against the real API.
+- Gemini free-tier rate limits may force `max_calls_per_round` down. Backoff
+  is implemented and unit-tested; retries and every provider POST consume the
+  hard HTTP-attempt budget. Fallback support exists but is disabled in shipped
+  configs (no distinct model verified), so it is not exercised in production.
 - Kaggle output persistence between sessions: reattach `/kaggle/working` as
   an input dataset; `memory/` resumes from `state.json` (tested offline, E11).

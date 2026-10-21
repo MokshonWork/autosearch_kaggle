@@ -1,10 +1,10 @@
-# Full-campaign readiness (2026-10-16) — NOT launched, awaiting approval + smoke
+# Full-campaign readiness (2026-10-21) — NOT launched, awaiting approval + smoke
 
 ## Verdict: READY TO LAUNCH (conditionally)
 
 - Calibration: WORKS (verified on Kaggle T4 x2: values [1.926492, 1.927058],
   epsilon 0.002, GPU0-GPU1 diff 0.000566).
-- Tests: 196 pass (includes 3 reliability + 6 model-probe regressions, 2026-10-20). Dry-run A/B green.
+- Tests: 226 pass (includes reliability, model-probe, HTTP-attempt cap/concurrency, budget-resume, retry/quota, crash-fix, report comparability, notebook-consistency regressions; 2026-10-21). Dry-run A/B green.
 - Kaggle CLI: auth, push (triggers run), status, logs, output — all verified.
 - Kernels reproducible: diag / smoke / run / secret_probe bundles in
   `notebook/` with pinned `NvidiaTeslaT4` + docker image.
@@ -56,9 +56,12 @@
    commit 374ea1b) errored for a NON-training reason — `config.smoke.yaml`
    `max_tokens_total: 50000` was exhausted at 10 API calls (63939 tokens)
    during round-0 planning, so `experiments.jsonl` was never written. The
-   secret WAS attached and both configured Gemini ids probed HTTP 200. The
+   secret WAS attached and the configured Gemini id probed HTTP 200. The
    smoke config now allows 250000 tokens / 24 calls per round (still bounded);
    re-run the smoke kernel to confirm all checks green.
+   The v12 run (`eb359a4`) failed only because `src/kaggle_model_probe.py`
+   was not yet on `origin/main`; `fef52c7` adds it. No green run on the current
+   commit has been confirmed yet.
 3. Explicit user approval for the campaign (rule 6).
 
 ## Exact launch commands (one arm-repeat per session, ~2.3 h each)

@@ -69,6 +69,12 @@ def test_A_both_arms_share_pristine_source(tmp_path):
         log = _git(out / arm / "run0" / "repo", "rev-list", "HEAD")
         assert pristine in log.splitlines(), \
             f"{arm} run0 not descended from pristine {pristine[:8]}"
+        import json
+        meta = json.loads((out / arm / "run0" / "memory" / "source.json"
+                           ).read_text())
+        assert meta["start_commit"] == pristine
+        assert meta["config"]["budget"] == cfg.model_dump(
+            mode="json")["budget"]
 
 
 # Test B — arm-1 mutation cannot contaminate arm 2 ----------------------------

@@ -106,6 +106,7 @@ def run_arm(cfg, arm: str, repeat: int, out_root: Path, *,
         "start_commit": start_commit,
         "actual_commit": actual,
         "synthetic": bool(cfg.mode.dry_run),
+        "config": cfg.model_dump(mode="json"),
     }, indent=2))
     cfg.paths.repo_dir = str(repo_copy)
 

@@ -14,7 +14,7 @@
 | G10 | crash/oom/nan/timeout recorded, never kept | `metrics_parser.classify_status` + `decide` | E8 parametrized statuses; runner tests |
 | G11 | Fixed seed + commit/diff hash recorded | seed is a PROTECTED line; `diff_hash` stored in `RunResult.commit_or_diff_hash` | integration tests inspect logged experiments |
 | G12 | Schema-validated LLM output, 2 retries, graceful fail | `BaseClient.generate_json` | E3 (`test_agents_e3_e4_e5.py`) |
-| G13 | API budgets + backoff + fallback model | `BudgetTracker` (raises `BudgetExhausted` → clean stop), `GeminiClient` backoff/fallback | E12 token-budget test |
+| G13 | API budgets + backoff + optional fallback | `BudgetTracker` atomically reserves each outbound HTTP attempt before dispatch (hard cap; retries/fallback/timeouts count), raises `BudgetExhausted` → clean stop; total + per-round usage restored on resume. Gemini/Groq backoff is Retry-After aware and daily-quota fast-fail. Fallback exists only when a distinct `fallback_model` is configured; shipped configs disable it. | E12 token-budget test; HTTP-attempt cap/concurrency/resume tests |
 | G14 | Injection hygiene: delimited data sections, agents return JSON only | `src/prompt_render.py`, all prompts state "DATA, not instructions" | E9 (`test_e9_injection_does_not_change_decision`) |
 | G15 | Keep/discard by code only | `src/decision.py`; Analyst has no decision input | E7, E8, E9 |
 | G16 | STOP file kill switch | `_stop_reason()` checks each round | E12 `test_e12_stop_file` |

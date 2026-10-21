@@ -165,3 +165,47 @@ def test_guard_retry_identical_content_reuses_manifest(project):
     assert persisted.get_test(out.test_id).candidate_revision == \
         change.candidate_revision
     assert persisted.check_revision_match(out.change_id, out.test_id)
+
+
+def test_crash_fix_updates_persisted_manifest_revision(project):
+    """A crash fix rewrites train.py; the registry must store the final hash."""
+    cfg, client, _ = project
+    cfg.budget.max_rounds = 1
+    initial = Patch(hypothesis_id="H-0001", edits=[GOOD_EDIT])
+    fix = Patch(hypothesis_id="H-0001",
+                edits=[{"find": "DEVICE_BATCH_SIZE = 32",
+                        "replace": "DEVICE_BATCH_SIZE = 16"}])
+    orch = Orchestrator(cfg, client, runner_fn=None)
+
+    calls = {"full": 0}
+
+    def runner(wt, gpu, hid, budget_s, allowance_s, **kw):
+        if kw.get("preflight_steps"):
+            return RunResult(hypothesis_id=hid, gpu=gpu, status="ok",
+                             stdout_tail="PREFLIGHT_OK")
+        calls["full"] += 1
+        if calls["full"] == 1:
+            return RunResult(hypothesis_id=hid, gpu=gpu, status="crash",
+                             stdout_tail="simulated crash")
+        return RunResult(hypothesis_id=hid, gpu=gpu, status="ok",
+                         val_bpb=1.4, steps=10, wall_seconds=1.0,
+                         stdout_tail="ok", commit_or_diff_hash="h")
+
+    orch.runner_fn = runner
+    orch.coder = _ScriptedCoder([initial, fix])
+    wt = orch.work_dir / "gpu0"
+    git_ops.ensure_worktree(orch.repo, wt, orch.state["best_commit"])
+    src = (wt / "train.py").read_text()
+    hyp = make_hypothesis("H-0001")
+
+    out = orch._worker_ma(0, 0, wt, src, hyp, None,
+                          orch.state["best_commit"])
+
+    assert out.result.status == "ok"
+    final_revision = content_fingerprint(out.patched_src)
+    persisted = Registry(orch.store.dir)
+    change = persisted.get_change(out.change_id)
+    report = persisted.get_test(out.test_id)
+    assert change.candidate_revision == final_revision
+    assert report.candidate_revision == final_revision
+    assert persisted.check_revision_match(change.id, report.id)

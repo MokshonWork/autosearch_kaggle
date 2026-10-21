@@ -231,22 +231,33 @@ print('SMOKE_COMPLETE_ALL_CHECKS_PASS')
 
 '''
 
-cells = [
-    md("# autosearch smoke — bounded Phase-3 smoke test (GPU T4 x2)\n",
-       "\n",
-       "One arm (multi_agent), one repeat, config.smoke.yaml: calibration + up to\n",
-       "2 experiments with a 10s training budget. Validates WIRING, not science.\n",
-       "Expected wall time ~25-40 min (incl. data prep). Requires the\n",
-       "GEMINI_API_KEY secret (checked BEFORE any expensive step)."),
-    code(CELL1), code(CELL2), code(CELL2B), code(CELL3), code(CELL4), code(CELL5),
-]
+def build_notebook() -> dict:
+    """Build the notebook dict without touching disk (unit-testable)."""
+    cells = [
+        md("# autosearch smoke — bounded Phase-3 smoke test (GPU T4 x2)\n",
+           "\n",
+           "One arm (multi_agent), one repeat, config.smoke.yaml: calibration + up to\n",
+           "2 experiments with a 10s training budget. Validates WIRING, not science.\n",
+           "Expected wall time ~25-40 min (incl. data prep). Requires the\n",
+           "GEMINI_API_KEY secret (checked BEFORE any expensive step)."),
+        code(CELL1), code(CELL2), code(CELL2B), code(CELL3),
+        code(CELL4), code(CELL5),
+    ]
+    return {"cells": cells,
+            "metadata": {"kernelspec": {
+                "display_name": "Python 3", "language": "python",
+                "name": "python3"},
+                "language_info": {"name": "python", "version": "3.13"}},
+            "nbformat": 4, "nbformat_minor": 5}
 
-nb = {"cells": cells,
-      "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python",
-                                  "name": "python3"},
-                   "language_info": {"name": "python", "version": "3.13"}},
-      "nbformat": 4, "nbformat_minor": 5}
-outp = Path(__file__).resolve().parent / "autosearch_smoke.ipynb"
-outp.write_text(json.dumps(nb, indent=1))
-json.load(open(outp))
-print("wrote", outp, outp.stat().st_size)
+
+def main() -> None:
+    outp = Path(__file__).resolve().parent / "autosearch_smoke.ipynb"
+    nb = build_notebook()
+    outp.write_text(json.dumps(nb, indent=1))
+    json.loads(outp.read_text())
+    print("wrote", outp, outp.stat().st_size)
+
+
+if __name__ == "__main__":
+    main()

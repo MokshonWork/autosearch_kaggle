@@ -9,7 +9,7 @@ llm:
   model_guard: gemini-3.6-flash
   model_analyst: gemini-3.6-flash
   model_librarian: gemini-3.6-flash
-  fallback_model: gemini-3.6-flash    # 2026-10 A6 check: gemini-2.5-flash-lite now 404s
+  fallback_model: ""       # no distinct Gemini model verified; fallback disabled
   temperatures: {ideator: 0.7, coder: 0.2, guard: 0.1, analyst: 0.3, librarian: 0.3}
   max_output_tokens: {ideator: 1200, coder: 4096, guard: 800, analyst: 800, librarian: 1500}
   timeout_s: 30
@@ -19,13 +19,14 @@ llm:
 budget:
   max_rounds: 1
   max_experiments: 2
-  max_api_calls_total: 30
-  # 2026-10-20: 50000 exhausted at 10 calls in a real smoke run (63939 tokens)
-  # before any experiment was written. ~6.4k tokens/call on full train.py
-  # prompts; 2 experiments need ~10-14 calls. Bounded, still far below the
-  # production 800k cap.
+  max_api_calls_total: 30    # hard cap on outbound HTTP attempts (retries count)
+  # 2026-10-20: 50000 exhausted at 10 logical calls in a real smoke run
+  # (63939 tokens) before any experiment was written. ~6.4k tokens/call on
+  # full train.py prompts; 2 experiments need ~10-14 logical calls. Retries
+  # consume this attempt cap, so 30 leaves limited headroom. Tokens remain
+  # bounded far below the production 800k cap.
   max_tokens_total: 250000
-  max_calls_per_round: 24
+  max_calls_per_round: 24    # outbound HTTP attempts in the single smoke round
   wall_clock_cap_hours: 0.5
   session_margin_minutes: 5
   no_improvement_patience: 1

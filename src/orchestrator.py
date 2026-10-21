@@ -119,6 +119,29 @@ class Orchestrator:
             client, self.prompts_dir)
 
         self.state = self._load_or_fresh_state()
+        self._restore_budget()
+        # Persist each reservation/generation so a hard kill mid-round cannot
+        # reset the per-round or total HTTP-attempt budget on resume.
+        self.budget.set_on_change(self.save_state)
+
+    def _restore_budget(self) -> None:
+        """Restore cumulative + per-round HTTP usage across resumes.
+
+        Counters are assigned, never re-added, so resume cannot double-count.
+        Older checkpoints may omit these fields or contain junk; ignore those
+        safely. Legacy checkpoints without a round marker reset only the
+        per-round counter on the next begin_round(); the total cap still holds.
+        """
+        for key, attr in (("api_calls", "requests_total"),
+                          ("api_calls_this_round", "requests_this_round"),
+                          ("api_tokens", "tokens_total"),
+                          ("api_generations", "generations_total")):
+            value = self.state.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                setattr(self.budget, attr, max(getattr(self.budget, attr), value))
+        marker = self.state.get("api_round")
+        if isinstance(marker, int) and not isinstance(marker, bool) and marker >= 0:
+            self.budget.round_index = marker
 
     def _load_or_fresh_state(self) -> dict:
         """Resume if possible; corrupt state -> fresh start, never silent."""
@@ -160,10 +183,8 @@ class Orchestrator:
         if reason:
             self.state["stopped_reason"] = reason
         with self._lock:
-            self.state["api_calls"] = self.budget.calls_total
-            self.state["api_tokens"] = self.budget.tokens_total
-            snapshot = dict(self.state)
-        self.store.save_state(snapshot)
+            self.state.update(self.budget.snapshot())
+            self.store.save_state(dict(self.state))
 
     def _stop_reason(self) -> str | None:
         b = self.cfg.budget
@@ -233,11 +254,11 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ round
     def _round(self) -> None:
-        self.budget.new_round()
         with self._lock:
             rnd = self.state["round"]
             best_commit = self.state["best_commit"]
             self.state["round_status"] = "pending"
+        self.budget.begin_round(rnd)
         self.log(f"[round {rnd}] start best={self.state['best_val_bpb']}")
         past = self.store.read_experiments()
 

@@ -17,7 +17,7 @@ def test_e3_schema_validity_30x(project):
     ok = 0
     runs = 0
     for n in range(30):
-        client.budget.new_round()  # per-round cap; this eval spans many rounds
+        client.budget.begin_round(n)  # per-round cap; eval spans many rounds
         for agent, schema in (("ideator", IdeatorOutput),
                               ("guard", GuardLLMVerdict),
                               ("analyst", AnalystNote)):

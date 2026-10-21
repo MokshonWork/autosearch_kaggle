@@ -29,7 +29,7 @@ the measured noise epsilon, and an honest verdict. **No results yet — see
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests -q          # 100 tests: guardrails E1-E12, units, integration
+python -m pytest tests -q          # 226 tests: guardrails E1-E12, units, integration
 python -m src.mock_repo /tmp/mock  # mock training repo (dry-run target)
 python -m evals.run_ab --config evals/fixtures/dry_config.yaml --repeats 1 \
     --out /tmp/ab_out              # full A/B harness with mock LLM + mock runner
@@ -50,15 +50,17 @@ python -m evals.run_ab --config evals/fixtures/dry_config.yaml --repeats 1 \
 ```
 autoresearch-team/
   README.md  LICENSE  config.yaml  requirements.txt  context.md
-  notebook/kaggle_run.ipynb     # Kaggle entry point
+  notebook/kaggle_run.ipynb     # Kaggle A/B entry point
+  notebook/smoke/               # bounded smoke notebook + its generator
   src/        orchestrator.py, decision.py, calibration.py, schemas.py,
               config.py, prompt_render.py, llm/client.py, agents/ (ideator,
               coder, guard, analyst, librarian, baseline), tools/ (runner,
               git_ops, patching, ast_checks, hashing, metrics_parser),
-              memory/store.py, mock_handlers.py, mock_repo.py
+              memory/store.py, mock_handlers.py, mock_repo.py,
+              kaggle_model_probe.py, kaggle_secret.py
   prompts/    one markdown file per agent (Section 7 of the spec)
   repo/       forked karpathy/autoresearch with the one-time T4 port
-  tests/      100 tests incl. evals E1-E12 (offline, mock-based)
+  tests/      226 tests incl. evals E1-E12 (offline, mock-based)
   evals/      run_ab.py, metrics.py, report.py, fixtures/
   docs/       ARCHITECTURE, ASSUMPTIONS, COMPUTE_BUDGET, GUARDRAILS, EVALS,
               EXPLAINER (viva), DEMO

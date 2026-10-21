@@ -32,9 +32,12 @@ A/B total: `2 arms × R repeats` runs. With R=2: 4 runs.
 | A/B, R=2 (4 runs) | ≈ 8.5 h total, run sequentially |
 | Note | A single Kaggle session may not fit 4 runs; plan one session per arm-repeat (≈2.2 h each) |
 
-API budget: `max_api_calls_total: 400`, `max_tokens_total: 800000` per run
-(config.yaml). Adjust `max_rounds`/`max_experiments` after measuring real
-startup time (A8) and per-experiment wall-clock (E13).
+API budget: `max_api_calls_total: 400` is a hard cap on **outbound provider
+HTTP attempts** per run (retries, fallback POSTs, timeouts, and failed responses
+all count); `max_calls_per_round: 12` applies the same rule per round.
+`max_tokens_total: 800000` counts tokens reported by successful generations
+only. Adjust `max_rounds`/`max_experiments` after measuring real startup time
+(A8) and per-experiment wall-clock (E13).
 
 ## What to measure on Kaggle before launching (notebook does this)
 

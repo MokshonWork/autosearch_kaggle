@@ -30,9 +30,19 @@ class LLMError(RuntimeError):
 
 
 class BudgetTracker:
-    """Counts API calls and tokens; raises BudgetExhausted past limits (G13).
+    """Hard caps for outbound provider HTTP attempts + reported tokens (G13).
 
-    Thread-safe: two worker threads share one tracker (hardening Ch.7).
+    Semantics:
+    - ``max_api_calls_total`` / ``max_calls_per_round`` count **HTTP POSTs**
+      (including retries, fallback, timeouts, and failed responses).
+    - ``reserve_call()`` MUST run immediately before every POST. It checks
+      and increments atomically, so N permits at most N outbound requests.
+    - ``generations_total`` counts successful logical JSON generations (one
+      per ``generate_json`` attempt that returned text).
+    - ``tokens_total`` counts provider-reported tokens from successful
+      generations only; failed HTTP attempts consume calls, not tokens.
+
+    Thread-safe: both worker threads share one tracker (hardening Ch.7).
     """
 
     def __init__(self, max_calls_total: int, max_tokens_total: int,
@@ -42,26 +52,65 @@ class BudgetTracker:
         self.max_calls_total = max_calls_total
         self.max_tokens_total = max_tokens_total
         self.max_calls_per_round = max_calls_per_round
-        self.calls_total = 0
-        self.calls_this_round = 0
+        self.requests_total = 0
+        self.requests_this_round = 0
+        self.round_index: int | None = None
+        self.generations_total = 0
         self.tokens_total = 0
+        self._on_change = None
 
-    def new_round(self) -> None:
-        self.calls_this_round = 0
+    def set_on_change(self, callback) -> None:
+        """Register a durability hook (orchestrator persists budget state)."""
+        self._on_change = callback
 
-    def record(self, tokens: int) -> None:
+    def _notify(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
+
+    def begin_round(self, round_index: int) -> None:
+        """Start a round, preserving usage when resuming the same round."""
         with self._lock:
-            self.calls_total += 1
-            self.calls_this_round += 1
+            if round_index != self.round_index:
+                self.requests_this_round = 0
+                self.round_index = round_index
+
+    def reserve_call(self) -> None:
+        """Atomically reserve one outbound HTTP attempt before dispatch."""
+        with self._lock:
+            if self.requests_total >= self.max_calls_total:
+                raise BudgetExhausted(
+                    f"api HTTP attempts total >= {self.max_calls_total}")
+            if self.requests_this_round >= self.max_calls_per_round:
+                raise BudgetExhausted(
+                    "api HTTP attempts this round >= "
+                    f"{self.max_calls_per_round}")
+            if self.tokens_total >= self.max_tokens_total:
+                raise BudgetExhausted(
+                    f"tokens total >= {self.max_tokens_total}")
+            self.requests_total += 1
+            self.requests_this_round += 1
+        self._notify()
+
+    def record_generation(self, tokens: int) -> None:
+        """Record one successful logical generation and its token usage."""
+        with self._lock:
+            self.generations_total += 1
             self.tokens_total += tokens
-            if self.calls_total > self.max_calls_total:
-                raise BudgetExhausted(
-                    f"api calls total > {self.max_calls_total}")
-            if self.tokens_total > self.max_tokens_total:
-                raise BudgetExhausted(f"tokens total > {self.max_tokens_total}")
-            if self.calls_this_round > self.max_calls_per_round:
-                raise BudgetExhausted(
-                    f"api calls this round > {self.max_calls_per_round}")
+            over = self.tokens_total > self.max_tokens_total
+        self._notify()
+        if over:
+            raise BudgetExhausted(f"tokens total > {self.max_tokens_total}")
+
+    def snapshot(self) -> dict:
+        """Consistent counter snapshot for state.json persistence."""
+        with self._lock:
+            return {
+                "api_calls": self.requests_total,
+                "api_calls_this_round": self.requests_this_round,
+                "api_round": self.round_index,
+                "api_generations": self.generations_total,
+                "api_tokens": self.tokens_total,
+            }
 
 
 def _extract_json(text: str) -> str:
@@ -73,6 +122,80 @@ def _extract_json(text: str) -> str:
             t = t[4:]
         t = t.rsplit("```", 1)[0]
     return t.strip()
+
+
+_RETRYABLE = (429, 500, 502, 503, 504)
+_MAX_ATTEMPTS = 6
+_BASE_DELAY = 2.0
+_MAX_DELAY = 60.0
+
+
+def _body(resp) -> dict | None:
+    """Best-effort JSON body; never raises (mocks may omit it)."""
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _retry_after(resp) -> float | None:
+    """Retry-After seconds (or Gemini RetryInfo), clamped to a safe bound."""
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:
+        raw = None
+    seconds: float | None = None
+    if raw is not None:
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            seconds = None
+    if seconds is None:
+        body = _body(resp) or {}
+        for detail in (body.get("error") or {}).get("details") or []:
+            if not isinstance(detail, dict):
+                continue
+            delay = detail.get("retryDelay")
+            if isinstance(delay, str) and delay.endswith("s"):
+                try:
+                    seconds = float(delay[:-1])
+                except ValueError:
+                    seconds = None
+            if seconds is not None:
+                break
+    if seconds is None:
+        return None
+    return min(max(seconds, 0.0), _MAX_DELAY)
+
+
+def _quota_exhausted(resp) -> bool:
+    """True only for permanent/daily quota exhaustion (not a rate limit).
+
+    Gemini reports daily-quota ids such as
+    ``GenerateRequestsPerDayPerProjectPerModel-FreeTier``; OpenAI-compatible
+    providers use ``insufficient_quota``. Unknown 429s remain retryable.
+    """
+    body = _body(resp)
+    if not body:
+        return False
+    text = json.dumps(body).lower()
+    if "insufficient_quota" in text:
+        return True
+    for detail in (body.get("error") or {}).get("details") or []:
+        if not isinstance(detail, dict):
+            continue
+        if "quotafailure" not in str(detail.get("@type", "")).lower():
+            continue
+        for violation in detail.get("violations") or []:
+            if not isinstance(violation, dict):
+                continue
+            quota = (str(violation.get("quotaId", "")) + " "
+                     + str(violation.get("quotaMetric", ""))).lower()
+            if "perday" in quota or "per day" in quota or "daily" in quota:
+                return True
+    return False
 
 
 class BaseClient:
@@ -91,7 +214,7 @@ class BaseClient:
         last_error = "no attempts"
         for _ in range(self.cfg.max_retries + 1):
             text, tokens = self._raw_generate(agent, attempt_prompt)
-            self.budget.record(tokens)
+            self.budget.record_generation(tokens)
             try:
                 data = json.loads(_extract_json(text))
                 return schema.model_validate(data), ""
@@ -130,18 +253,24 @@ class GeminiClient(BaseClient):
                 "responseMimeType": "application/json",
             },
         }
-        delay = 2.0
+        delay = _BASE_DELAY
         last_err = "unknown"
-        retryable = (429, 500, 502, 503, 504)
-        for _ in range(6):  # exponential backoff on rate limits (G13)
+        for attempt in range(_MAX_ATTEMPTS):
+            self.budget.reserve_call()
             try:
                 resp = self._requests.post(
                     url, json=body, timeout=self.cfg.timeout_s,
                     headers={"x-goog-api-key": self._api_key})
-                if resp.status_code in retryable:
+                if resp.status_code in _RETRYABLE:
                     last_err = f"HTTP {resp.status_code}"
-                    time.sleep(delay)
-                    delay *= 2
+                    if _quota_exhausted(resp):
+                        last_err += " (quota exhausted)"
+                        break
+                    if attempt == _MAX_ATTEMPTS - 1:
+                        break  # no sleep after the final attempt
+                    wait = _retry_after(resp)
+                    time.sleep(delay if wait is None else wait)
+                    delay = min(delay * 2, _MAX_DELAY)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -157,8 +286,10 @@ class GeminiClient(BaseClient):
                 break
             except self._requests.exceptions.RequestException as e:
                 last_err = redact(str(e))[:200]
+                if attempt == _MAX_ATTEMPTS - 1:
+                    break
                 time.sleep(delay)
-                delay *= 2
+                delay = min(delay * 2, _MAX_DELAY)
             except (KeyError, IndexError, TypeError, ValueError) as e:
                 last_err = f"bad gemini response: {redact(str(e))[:160]}"
                 break
@@ -167,6 +298,7 @@ class GeminiClient(BaseClient):
             # that killed an entire run; surface BOTH failures as LLMError.
             fb = self.cfg.fallback_model
             fb_url = url.replace(model, fb)
+            self.budget.reserve_call()
             try:
                 resp = self._requests.post(
                     fb_url, json=body, timeout=self.cfg.timeout_s,
@@ -216,18 +348,24 @@ class GroqClient(BaseClient):
         }
         headers = {"Authorization": f"Bearer {self._api_key}",
                    "Content-Type": "application/json"}
-        delay = 2.0
+        delay = _BASE_DELAY
         last_err = "unknown"
-        retryable = (429, 500, 502, 503, 504)
-        for _ in range(6):
+        for attempt in range(_MAX_ATTEMPTS):
+            self.budget.reserve_call()
             try:
                 resp = self._requests.post(
                     self.BASE, json=body, timeout=self.cfg.timeout_s,
                     headers=headers)
-                if resp.status_code in retryable:
+                if resp.status_code in _RETRYABLE:
                     last_err = f"HTTP {resp.status_code}"
-                    time.sleep(delay)
-                    delay *= 2
+                    if _quota_exhausted(resp):
+                        last_err += " (quota exhausted)"
+                        break
+                    if attempt == _MAX_ATTEMPTS - 1:
+                        break  # no sleep after the final attempt
+                    wait = _retry_after(resp)
+                    time.sleep(delay if wait is None else wait)
+                    delay = min(delay * 2, _MAX_DELAY)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -241,14 +379,17 @@ class GroqClient(BaseClient):
                 break
             except self._requests.exceptions.RequestException as e:
                 last_err = redact(str(e))[:200]
+                if attempt == _MAX_ATTEMPTS - 1:
+                    break
                 time.sleep(delay)
-                delay *= 2
+                delay = min(delay * 2, _MAX_DELAY)
             except (KeyError, IndexError, TypeError, ValueError) as e:
                 last_err = f"bad groq response: {redact(str(e))[:160]}"
                 break
         fb = self.cfg.fallback_model
         if fb and fb != model:
             fb_body = dict(body, model=fb)
+            self.budget.reserve_call()
             try:
                 resp = self._requests.post(
                     self.BASE, json=fb_body, timeout=self.cfg.timeout_s,
@@ -280,6 +421,7 @@ class MockLLMClient(BaseClient):
         self.call_counts: dict[str, int] = {}
 
     def _raw_generate(self, agent: str, prompt: str) -> tuple[str, int]:
+        self.budget.reserve_call()
         n = self.call_counts.get(agent, 0)
         self.call_counts[agent] = n + 1
         handler = self.handlers.get(agent)

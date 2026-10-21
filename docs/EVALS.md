@@ -17,7 +17,9 @@
 | E11 | Kill after round 1, resume → continues, unique ids, append-only log | pass | ✅ |
 | E12 | Stop rules: max_rounds, STOP file, token budget, no-improvement streak, wall-clock cap | all trigger clean stop with saved state | ✅ 5/5 |
 
-Latest run: **196 passed** (2026-10-20; see context.md progress log).
+Latest run: **226 passed** (2026-10-21; see context.md progress log).
+E11 now also covers total + per-round HTTP-attempt budget restoration across resume.
+The A/B report requires >=2 runs per arm and matching start commits + material config.
 
 ## On Kaggle (GPU) — notebook cells in `notebook/kaggle_run.ipynb`
 

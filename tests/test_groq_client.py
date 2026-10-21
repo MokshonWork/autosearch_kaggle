@@ -15,8 +15,8 @@ import requests as rq
 
 import src.llm.client as client_mod
 from src.config import Config
-from src.llm.client import (BudgetTracker, GeminiClient, GroqClient,
-                            LLMError, make_client)
+from src.llm.client import (BudgetExhausted, BudgetTracker, GeminiClient,
+                            GroqClient, LLMError, make_client)
 
 GROQ_KEY = "GROQ-FAKE-KEY-MUST-NOT-LEAK"
 GEMINI_KEY = "GEMINI-FAKE-KEY-MUST-NOT-LEAK"
@@ -35,9 +35,10 @@ def _cfg(provider="groq", api_env="GROQ_API_KEY"):
 
 
 class FakeResp:
-    def __init__(self, status, payload=None):
+    def __init__(self, status, payload=None, headers=None):
         self.status_code = status
         self._payload = GROQ_OK if payload is None else payload
+        self.headers = headers or {}
         self._err = None
         if status >= 400:
             r = rq.Response()
@@ -65,7 +66,7 @@ class GroqFake:
         item = self._script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return FakeResp(item)
+        return item if isinstance(item, FakeResp) else FakeResp(item)
 
 
 @pytest.fixture()
@@ -147,3 +148,49 @@ def test_groq_connection_error_backs_off_then_falls_back(groq):
     text, _ = client._raw_generate("librarian", "j")
     assert text == '{"ideas": []}'
     assert len(fake.calls) == 2
+
+
+def test_groq_retry_after_is_respected(groq, monkeypatch):
+    client, fake = groq
+    slept: list[float] = []
+    monkeypatch.setattr(client_mod.time, "sleep", slept.append)
+    fake._script.extend([FakeResp(429, headers={"Retry-After": "9"}), 200])
+    text, _ = client._raw_generate("ideator", "j")
+    assert text == '{"ideas": []}' and len(fake.calls) == 2
+    assert slept == [9.0]
+
+
+def test_groq_insufficient_quota_skips_retries(groq):
+    client, fake = groq
+    quota = {"error": {"type": "insufficient_quota", "code": "insufficient_quota"}}
+    fake._script.extend([FakeResp(429, payload=quota), 200])
+    text, _ = client._raw_generate("coder", "j")
+    assert text == '{"ideas": []}' and len(fake.calls) == 2
+    assert fake.calls[-1][1]["model"] == "openai/gpt-oss-120b"
+
+
+def test_groq_cap_blocks_before_post(groq):
+    client, fake = groq
+    client.budget = BudgetTracker(1, 100_000, 1)
+    fake._script.extend([200, 200])
+    assert client._raw_generate("ideator", "j")[0] == '{"ideas": []}'
+    with pytest.raises(BudgetExhausted):
+        client._raw_generate("ideator", "j")
+    assert len(fake.calls) == 1
+    assert client.budget.requests_total == 1
+
+
+def test_groq_fallback_consumes_attempt_and_is_blocked(groq):
+    client, fake = groq
+    client.budget = BudgetTracker(2, 100_000, 2)
+    fake._script.extend([404, 200])
+    assert client._raw_generate("coder", "j")[0] == '{"ideas": []}'
+    assert len(fake.calls) == 2
+    assert client.budget.requests_total == 2
+
+    client.budget = BudgetTracker(1, 100_000, 1)
+    fake._script.extend([404, 200])
+    with pytest.raises(BudgetExhausted):
+        client._raw_generate("coder", "j")
+    assert len(fake.calls) == 3  # only the primary was dispatched
+    assert client.budget.requests_total == 1
