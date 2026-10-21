@@ -50,3 +50,26 @@ def test_probe_cell_is_disabled_by_default(monkeypatch, capsys):
     assert calls == []
     assert "Skipping optional model-availability probe" in out
     assert "AUTOSEARCH_MODEL_PROBE=1" in out
+
+
+def test_live_run_cell_uses_one_experiment_config():
+    nb = json.loads(NOTEBOOK.read_text())
+    run = next(c for c in nb["cells"]
+               if "evals/run_ab.py" in "".join(c["source"]))
+    source = "".join(run["source"])
+    assert "'--config', 'config.one_experiment.yaml'" in source
+    assert "config.smoke.yaml" not in source
+
+
+def test_validation_cell_checks_one_candidate():
+    nb = json.loads(NOTEBOOK.read_text())
+    validate = next(c for c in nb["cells"]
+                    if "ONE_CANDIDATE_COMPLETE_ALL_CHECKS_PASS"
+                    in "".join(c["source"]))
+    source = "".join(validate["source"])
+    assert "config.one_experiment.yaml" in source
+    assert "'one_candidate_limit':" in source
+    assert "'candidate_experiment_persisted':" in source
+    assert "token_budget_respected" in source
+    assert "candidate attempt persisted:" in source
+    assert "successful trained candidate:" in source

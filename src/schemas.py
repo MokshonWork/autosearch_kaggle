@@ -102,6 +102,8 @@ class Experiment(BaseModel):
     patch_hash: str = ""
     guard: Optional[GuardReport] = None
     result: RunResult
+    confirmation_result: Optional[RunResult] = None
+    aggregate_val_bpb: Optional[float] = None
     decision: Optional[Decision] = None
     analyst_note: Optional[AnalystNote] = None
     api_tokens: int = 0

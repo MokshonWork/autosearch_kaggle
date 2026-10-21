@@ -29,8 +29,13 @@ class Guard:
         )
 
     def check(self, hypothesis: Hypothesis, patch: Patch,
-              original_src: str) -> tuple[GuardReport, str]:
-        """Return (GuardReport, patched_source). patched_source is "" on failure."""
+              original_src: str, *, patched_src: str | None = None,
+              use_llm: bool = True) -> tuple[GuardReport, str]:
+        """Return (GuardReport, patched_source). patched_source is "" on failure.
+
+        ``patched_src`` is for a repair patch already applied to the current
+        file; the caller must have enforced apply/uniqueness/max-edits first.
+        """
         checks: list[DeterministicCheck] = []
 
         def rec(name: str, passed: bool, detail: str = "") -> None:
@@ -41,13 +46,18 @@ class Guard:
         rec("only_train_py", True, "patch format targets train.py only")
 
         # G4: max edits + each find matches exactly once + applies cleanly.
-        try:
-            patched = patching.apply_edits(original_src, patch.edits,
-                                           self.max_edits)
-            rec("patch_applies", True, f"{len(patch.edits)} edits applied")
-        except patching.PatchError as e:
-            rec("patch_applies", False, str(e))
-            return self._finish(hypothesis, checks, original_src, ""), ""
+        if patched_src is not None:
+            patched = patched_src
+            rec("patch_applies", True, "repair patch already applied")
+        else:
+            try:
+                patched = patching.apply_edits(original_src, patch.edits,
+                                               self.max_edits)
+                rec("patch_applies", True, f"{len(patch.edits)} edits applied")
+            except patching.PatchError as e:
+                rec("patch_applies", False, str(e))
+                return self._finish(hypothesis, checks, original_src, "",
+                                    use_llm=use_llm), ""
 
         # G3: protected regions byte-identical.
         violations = patching.check_protected_regions(patched)
@@ -63,7 +73,8 @@ class Guard:
         ok, err = patching.compiles(patched)
         rec("compiles", ok, err)
         if not ok:
-            return self._finish(hypothesis, checks, original_src, ""), ""
+            return self._finish(hypothesis, checks, original_src, "",
+                                use_llm=use_llm), ""
 
         # G5: AST-diff on newly added code only.
         ast_violations = ast_checks.added_forbidden(original_src, patched)
@@ -72,16 +83,17 @@ class Guard:
         all_ok = all(c.passed for c in checks)
         return (
             self._finish(hypothesis, checks, original_src,
-                         patched if all_ok else ""),
+                         patched if all_ok else "", use_llm=use_llm),
             patched if all_ok else "",
         )
 
     def _finish(self, hypothesis: Hypothesis,
                 checks: list[DeterministicCheck],
-                original_src: str, patched: str) -> GuardReport:
+                original_src: str, patched: str,
+                *, use_llm: bool = True) -> GuardReport:
         report = GuardReport(hypothesis_id=hypothesis.id, deterministic=checks)
         det_ok = all(c.passed for c in checks)
-        if det_ok and self.use_llm and patched:
+        if det_ok and use_llm and self.use_llm and patched:
             self._llm_review(hypothesis, report, original_src, patched)
         else:
             report.llm_verdict = "skipped"

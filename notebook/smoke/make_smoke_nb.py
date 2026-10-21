@@ -120,14 +120,14 @@ assert r.returncode == 0, 'dataset/tokenizer prep failed'
 '''
 
 
-CELL4 = '''# 4. The bounded smoke run itself. Full output saved to log files.
+CELL4 = '''# 4. One bounded live candidate experiment. Full output saved to log files.
 import subprocess, sys
 from pathlib import Path
 out = Path('/kaggle/working/smoke_results')
 out.mkdir(parents=True, exist_ok=True)
 p = subprocess.run(
     [sys.executable, 'evals/run_ab.py',
-     '--config', 'config.smoke.yaml',
+     '--config', 'config.one_experiment.yaml',
      '--repeats', '1', '--arms', 'multi_agent',
      '--out', str(out)],
     cwd='/kaggle/working/autosearch_kaggle',
@@ -142,12 +142,16 @@ print(p.stderr[-2000:])
 assert p.returncode == 0, 'run_ab failed — see logs above'
 '''
 
-CELL5 = '''# 5. Validate wiring evidence: state, experiments, budgets, metrics.
-import json, math
+CELL5 = '''# 5. Validate the one-candidate result: state, experiments, budgets, metrics.
+import json, math, yaml
 from pathlib import Path
 
 out = Path('/kaggle/working/smoke_results')
 mem = out / 'multi_agent' / 'run0' / 'memory'
+cfg = yaml.safe_load(Path(
+    '/kaggle/working/autosearch_kaggle/config.one_experiment.yaml').read_text())
+api_cap = cfg['budget']['max_api_calls_total']
+token_cap = cfg['budget']['max_tokens_total']
 
 # 5a. Did the A/B runner (cell 4) produce its wiring evidence at all?
 #     Cell 4 asserts run_ab exit 0, so if memory/ is missing everything below
@@ -175,7 +179,7 @@ if missing:
         'train.py fails there (status timeout/crash/nan) it aborts',
         'the whole run with e.g.',
         '    RuntimeError: calibration produced no valid runs',
-        'and NO experiment is ever written. Fix the training',
+        'and NO candidate experiment is ever written. Fix the training',
         'budget / data prep and re-push, re-run.',
     ]
     raise AssertionError(chr(10).join(msg_lines))
@@ -201,8 +205,16 @@ checks = {
                         and state['baseline_bpb'] > 0),
     'budget_stop': state.get('stopped_reason') in
                    ('max_rounds', 'max_experiments', 'no_improvement'),
+    'one_candidate_limit': (state.get('experiments_done') == 1
+                            and len(exps) == 1),
+    'candidate_experiment_persisted': (
+        len(exps) == 1
+        and exps[0]['hypothesis']['id'].startswith('H-')
+        and exps[0]['result']['hypothesis_id']
+        == exps[0]['hypothesis']['id']),
     'api_calls_made': state.get('api_calls', 0) > 0,
-    'api_budget_respected': state.get('api_calls', 0) <= 30,
+    'api_budget_respected': state.get('api_calls', 0) <= api_cap,
+    'token_budget_respected': state.get('api_tokens', 0) <= token_cap,
     'at_least_one_ok_run': any(
         e['result']['status'] == 'ok'
         and e['result']['val_bpb'] is not None
@@ -233,21 +245,34 @@ if failed:
         print(' ', e['hypothesis']['id'], e['result']['status'],
               e['result'].get('val_bpb'), e['result'].get('steps'),
               e['result'].get('wall_seconds'))
-    raise AssertionError('smoke checks failed: ' + ', '.join(failed))
+    persisted = checks['candidate_experiment_persisted']
+    trained = checks['at_least_one_ok_run']
+    print('candidate attempt persisted:', persisted)
+    print('successful trained candidate:', trained)
+    extra = ''
+    if persisted and not trained:
+        status = exps[0]['result']['status']
+        extra = (f" (candidate attempt WAS persisted with status={status}, "
+                 "but no successful trained candidate)")
+        print('NOTE: the one-candidate attempt completed, but the candidate '
+              'did not finish an ok training run; strict success checks fail.')
+    raise AssertionError('one-candidate checks failed: '
+                         + ', '.join(failed) + extra)
 print(json.dumps(checks, indent=2))
-print('SMOKE_COMPLETE_ALL_CHECKS_PASS')
+print('ONE_CANDIDATE_COMPLETE_ALL_CHECKS_PASS')
 
 '''
 
 def build_notebook() -> dict:
     """Build the notebook dict without touching disk (unit-testable)."""
     cells = [
-        md("# autosearch smoke — bounded Phase-3 smoke test (GPU T4 x2)\n",
+        md("# autosearch smoke — one bounded live candidate (GPU T4 x2)\n",
            "\n",
-           "One arm (multi_agent), one repeat, config.smoke.yaml: calibration + up to\n",
-           "2 experiments with a 10s training budget. Validates WIRING, not science.\n",
-           "Expected wall time ~25-40 min (incl. data prep). Requires the\n",
-           "GEMINI_API_KEY secret (checked BEFORE any expensive step)."),
+           "One arm (multi_agent), one repeat, config.one_experiment.yaml: one\n",
+           "paired calibration run + exactly one candidate experiment with a 10s\n",
+           "training budget. Validates the live path, not science. Expected wall\n",
+           "time ~20-35 min (incl. data prep). Requires the GEMINI_API_KEY secret\n",
+           "(checked BEFORE any expensive step)."),
         code(CELL1), code(CELL2), code(CELL2B), code(CELL3),
         code(CELL4), code(CELL5),
     ]

@@ -266,6 +266,10 @@ class Orchestrator:
             plan = self._plan_round_ma(past)
         else:
             plan = self._plan_round_baseline()
+        # A planner may propose two slots; never exceed the remaining cap.
+        remaining = max(0, self.cfg.budget.max_experiments
+                        - self.state["experiments_done"])
+        plan = plan[:remaining]
 
         # Register one Scheduler task per planned experiment. A worker may
         # only run after claim() gates dependencies + ownership (Ch.4.2).
@@ -552,21 +556,32 @@ class Orchestrator:
             if fixes >= MAX_CRASH_FIXES:
                 break
             fixes += 1
+            current_src = (wt / "train.py").read_text()
             patch, err = self.coder.make_patch(
-                out.hypothesis, (wt / "train.py").read_text(),
+                out.hypothesis, current_src,
                 error_context=result.stdout_tail[-3000:])
             if patch is None:
                 break
             try:
-                patched = patching.apply_edits(
-                    (wt / "train.py").read_text(), patch.edits,
-                    self.cfg.guard.max_edits)
+                repaired = patching.apply_edits(
+                    current_src, patch.edits, self.cfg.guard.max_edits)
             except patching.PatchError as e:
                 result.stdout_tail = f"fix patch did not apply: {e}"
                 break
-            (wt / "train.py").write_text(patched)
-            out.patched_src = patched
-            out.diff = patching.unified_diff(src, patched)
+            report, approved = self.guard.check(
+                out.hypothesis, patch, src, patched_src=repaired,
+                use_llm=False)
+            if not report.approved:
+                reasons = "; ".join(
+                    c.detail for c in report.deterministic if not c.passed)
+                result.stdout_tail = (
+                    "repair patch rejected by deterministic guard: "
+                    + reasons + "\n" + result.stdout_tail)[:2000]
+                self.log(f"  [{out.hypothesis.id}] repair rejected: {reasons}")
+                break
+            (wt / "train.py").write_text(approved)
+            out.patched_src = approved
+            out.diff = patching.unified_diff(src, approved)
             result = full_run()
         out.result = result
         self.hash_registry.verify()  # G1 after every run
@@ -692,6 +707,8 @@ class Orchestrator:
         floor = plausibility_floor(self.state["baseline_bpb"],
                                    self.cfg.decision.plausibility_floor_factor)
         decisions = {}
+        decision_vals: dict[str, float | None] = {}
+        confirmations: dict[str, RunResult] = {}
         improved: list[WorkerOutcome] = []
         analyst_error: Exception | None = None
         for out in outcomes:
@@ -712,26 +729,30 @@ class Orchestrator:
             dec = decide(out.result, best, eps, floor,
                          self.cfg.decision.sanity_ceiling,
                          self.cfg.decision.confirm_marginal_wins)
+            decision_vals[out.hypothesis.id] = out.result.val_bpb
             if dec.action == "retest":  # marginal win: confirm with one re-run
                 wt = self.work_dir / f"gpu{out.result.gpu}"
                 re = self.runner_fn(wt, out.result.gpu, out.hypothesis.id,
                                     self.cfg.training.time_budget_s,
                                     self.cfg.training.startup_allowance_s)
+                confirmations[out.hypothesis.id] = re
                 if re.status == "ok" and re.val_bpb is not None:
                     mean = (out.result.val_bpb + re.val_bpb) / 2
                     dec = decide_retest(mean, best, eps)
                     dec.hypothesis_id = out.hypothesis.id
+                    decision_vals[out.hypothesis.id] = mean
                 else:
                     dec = decide(re, best, eps, floor,
                                  self.cfg.decision.sanity_ceiling, False)
                     dec.hypothesis_id = out.hypothesis.id
+                    decision_vals[out.hypothesis.id] = None
             decisions[out.hypothesis.id] = dec
             if dec.action == "keep":
                 improved.append(out)
 
         # Both improved -> keep the better, queue the other (Section 6.3.6).
         if len(improved) == 2:
-            improved.sort(key=lambda o: o.result.val_bpb)
+            improved.sort(key=lambda o: decision_vals[o.hypothesis.id])
             winner, loser = improved
             decisions[loser.hypothesis.id] = decisions[
                 loser.hypothesis.id].model_copy(update={
@@ -782,22 +803,30 @@ class Orchestrator:
                     commit = git_ops.commit_train_py(
                         self.repo, f"{out.hypothesis.id}: "
                         f"{out.hypothesis.change_summary[:60]}")
+                    promoted = dec.best_after
+                    if promoted is None:
+                        promoted = decision_vals.get(out.hypothesis.id)
+                    if promoted is None:
+                        promoted = out.result.val_bpb
                     with self._lock:
                         self.state["best_commit"] = commit
-                        self.state["best_val_bpb"] = out.result.val_bpb
+                        self.state["best_val_bpb"] = promoted
                     self.registry.set_baseline({  # accepted baseline (inv.4)
-                        "commit": commit, "val_bpb": out.result.val_bpb,
+                        "commit": commit, "val_bpb": promoted,
                         "hypothesis_id": out.hypothesis.id,
                         "change_id": out.change_id,
                         "candidate_revision": out.candidate_revision,
                         "round": self.state["round"]})
-                    best = out.result.val_bpb
+                    best = promoted
                     kept = True
             exp = Experiment(
                 round=self.state["round"], worker=out.result.gpu,
                 hypothesis=out.hypothesis,
                 patch_hash=diff_hash(out.diff) if out.diff else "",
-                guard=out.guard_report, result=out.result, decision=dec,
+                guard=out.guard_report, result=out.result,
+                confirmation_result=confirmations.get(out.hypothesis.id),
+                aggregate_val_bpb=decision_vals.get(out.hypothesis.id),
+                decision=dec,
                 analyst_note=getattr(out, "analyst_note", None),
                 api_tokens=self.budget.tokens_total - out.tokens_before,
                 timestamp=datetime.now(timezone.utc).isoformat())

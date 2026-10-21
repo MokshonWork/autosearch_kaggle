@@ -1,0 +1,70 @@
+# One bounded live candidate experiment. Keeps config.smoke.yaml unchanged.
+# Calibration is one paired run (both GPUs), no LLM calls; then exactly one
+# candidate experiment is planned, guarded, trained, evaluated, and persisted.
+llm:
+  provider: gemini
+  model_ideator: gemini-3.6-flash
+  model_coder: gemini-3.6-flash
+  model_guard: gemini-3.6-flash
+  model_analyst: gemini-3.6-flash
+  model_librarian: gemini-3.6-flash
+  fallback_model: ""       # no distinct Gemini model verified; fallback disabled
+  temperatures: {ideator: 0.7, coder: 0.2, guard: 0.1, analyst: 0.3, librarian: 0.3}
+  max_output_tokens: {ideator: 1200, coder: 4096, guard: 800, analyst: 800, librarian: 1500}
+  timeout_s: 30
+  max_retries: 1
+  api_key_env: GEMINI_API_KEY
+
+budget:
+  max_rounds: 1
+  max_experiments: 1
+  # One candidate normally needs ~5-8 logical calls (Ideator, Coder, Guard,
+  # Analyst, plus possible Guard/Coder or crash-fix retries). With
+  # max_retries=1 that is roughly 10-16 HTTP POSTs; 24 leaves bounded headroom.
+  # Tokens: a prior smoke averaged ~6.4k tokens/logical call, so 80k covers
+  # ~12 successful calls, not the 250k two-experiment smoke allowance.
+  # These are local caps, NOT a guarantee of provider quota availability.
+  max_api_calls_total: 24
+  max_tokens_total: 80000
+  max_calls_per_round: 24
+  wall_clock_cap_hours: 0.5
+  session_margin_minutes: 5
+  no_improvement_patience: 1
+
+training:
+  time_budget_s: 10
+  startup_allowance_s: 240
+  dry_run_steps: 3
+  seed: 42
+  fp16: true
+  use_compile: false
+  gpus: [0, 1]
+
+decision:
+  calibration_runs: 1
+  min_delta: 0.002
+  confirm_marginal_wins: true
+  plausibility_floor_factor: 0.7
+  sanity_ceiling: 20.0
+
+guard:
+  max_edits: 8
+  max_diff_lines: 60
+  forbidden_added_calls: [subprocess, socket, requests, urllib, http, ftplib, shutil,
+    "os.system", eval, exec, "__import__", "os.environ", "os.getenv", open_write]
+  protected_files: [prepare.py, config.yaml]
+
+dedupe:
+  text_similarity_threshold: 0.85
+  use_llm_judge_for_borderline: false
+
+paths:
+  repo_dir: repo
+  work_dir: /kaggle/working/work
+  memory_dir: /kaggle/working/memory
+  results_dir: results
+  stop_file: /kaggle/working/STOP
+
+mode:
+  dry_run: false
+  arm: multi_agent
